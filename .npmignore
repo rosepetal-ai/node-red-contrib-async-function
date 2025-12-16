@@ -1,0 +1,25 @@
+# Test files
+test/
+*.spec.js
+*.test.js
+
+# Coverage
+.nyc_output
+coverage/
+
+# IDE
+.vscode/
+.idea/
+
+# Git
+.git/
+.gitignore
+
+# CI
+.github/
+
+# Documentation source
+docs/
+
+# Development files
+.eslintrc.js
