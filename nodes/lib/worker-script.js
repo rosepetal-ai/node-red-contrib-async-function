@@ -5,7 +5,7 @@
  * Handles message communication with the main thread.
  */
 
-const { parentPort, workerData } = require('worker_threads');
+const { parentPort } = require('worker_threads');
 
 // Track worker state
 let isTerminating = false;
@@ -92,7 +92,7 @@ if (parentPort) {
         }
     });
 
-    process.on('unhandledRejection', (reason, promise) => {
+    process.on('unhandledRejection', (reason, _promise) => {
         if (!isTerminating) {
             parentPort.postMessage({
                 type: 'error',

@@ -11,9 +11,7 @@ const TimeoutManager = require('./timeout-manager');
 
 // Default configuration
 const DEFAULT_CONFIG = {
-    minWorkers: 2,              // Always keep 2 workers alive
-    maxWorkers: 4,              // Maximum 4 concurrent workers
-    idleTimeout: 60000,         // Kill idle workers after 60s
+    numWorkers: 3,              // Fixed worker count
     taskTimeout: 30000,         // Default task timeout: 30s
     maxQueueSize: 100,          // Max queued messages
     workerScript: path.join(__dirname, 'worker-script.js')
@@ -52,9 +50,9 @@ class WorkerPool {
             return;
         }
 
-        // Create minimum workers
+        // Create exactly numWorkers workers
         const promises = [];
-        for (let i = 0; i < this.config.minWorkers; i++) {
+        for (let i = 0; i < this.config.numWorkers; i++) {
             promises.push(this.createWorker());
         }
 
@@ -75,8 +73,8 @@ class WorkerPool {
                     worker,
                     state: WorkerState.STARTING,
                     taskId: null,
-                    idleTimer: null,
-                    startTime: Date.now()
+                    startTime: Date.now(),
+                    markedForRemoval: false
                 };
 
                 // Setup event handlers
@@ -89,12 +87,11 @@ class WorkerPool {
                     reject(new Error('Worker failed to start within timeout'));
                 }, 5000);
 
-                const originalHandler = worker.on('message', (msg) => {
+                worker.on('message', (msg) => {
                     if (msg.type === 'ready') {
                         clearTimeout(readyTimeout);
                         workerState.state = WorkerState.IDLE;
                         this.workers.push(workerState);
-                        this.startIdleTimer(workerState);
                         resolve(workerState);
                     }
                 });
@@ -106,24 +103,63 @@ class WorkerPool {
     }
 
     /**
-     * Get an idle worker or create a new one
-     * @returns {object|null} Worker state object or null if none available
+     * Resize the worker pool gracefully
+     * @param {number} newNumWorkers - New target worker count
+     * @returns {Promise<void>}
      */
-    async acquireWorker() {
-        // Find idle worker
-        let workerState = this.workers.find(w => w.state === WorkerState.IDLE);
+    async resizePool(newNumWorkers) {
+        if (this.shuttingDown) {
+            throw new Error('Cannot resize pool during shutdown');
+        }
 
-        // If no idle worker and below max, create new one
-        if (!workerState && this.workers.length < this.config.maxWorkers) {
-            try {
-                workerState = await this.createWorker();
-            } catch (err) {
-                // Failed to create worker
-                return null;
+        if (newNumWorkers < 1) {
+            throw new Error('numWorkers must be at least 1');
+        }
+
+        const currentCount = this.workers.length;
+        const delta = newNumWorkers - currentCount;
+
+        if (delta === 0) {
+            return; // No change needed
+        }
+
+        if (delta > 0) {
+            // Scale up: Add new workers
+            const promises = [];
+            for (let i = 0; i < delta; i++) {
+                promises.push(this.createWorker());
+            }
+            await Promise.all(promises);
+        } else {
+            // Scale down: Gracefully remove workers
+            const toRemoveCount = Math.abs(delta);
+            const idleWorkers = this.workers.filter(w => w.state === WorkerState.IDLE);
+
+            // Immediately terminate idle workers
+            const toTerminate = idleWorkers.slice(0, toRemoveCount);
+            await Promise.all(toTerminate.map(w => this.terminateWorker(w)));
+
+            // Mark remaining busy workers for removal after task completion
+            const remainingToRemove = toRemoveCount - toTerminate.length;
+            if (remainingToRemove > 0) {
+                const busyWorkers = this.workers.filter(w => w.state === WorkerState.BUSY);
+                for (let i = 0; i < remainingToRemove && i < busyWorkers.length; i++) {
+                    busyWorkers[i].markedForRemoval = true;
+                }
             }
         }
 
-        return workerState;
+        // Update config
+        this.config.numWorkers = newNumWorkers;
+    }
+
+    /**
+     * Get an idle worker
+     * @returns {object|null} Worker state object or null if none available
+     */
+    async acquireWorker() {
+        // Find and return idle worker (no dynamic creation)
+        return this.workers.find(w => w.state === WorkerState.IDLE) || null;
     }
 
     /**
@@ -185,9 +221,6 @@ class WorkerPool {
      * @param {number} timeout - Timeout in milliseconds
      */
     runTask(workerState, taskId, code, msg, timeout) {
-        // Clear idle timer
-        this.clearIdleTimer(workerState);
-
         // Update worker state
         workerState.state = WorkerState.BUSY;
         workerState.taskId = taskId;
@@ -265,8 +298,8 @@ class WorkerPool {
         // Remove worker from pool
         this.removeWorker(workerState);
 
-        // Create replacement if below minimum
-        if (this.workers.length < this.config.minWorkers && !this.shuttingDown) {
+        // Create replacement if below target
+        if (this.workers.length < this.config.numWorkers && !this.shuttingDown) {
             try {
                 await this.createWorker();
             } catch (createErr) {
@@ -313,7 +346,7 @@ class WorkerPool {
         }
 
         // Create replacement worker
-        if (this.workers.length < this.config.minWorkers && !this.shuttingDown) {
+        if (this.workers.length < this.config.numWorkers && !this.shuttingDown) {
             try {
                 await this.createWorker();
             } catch (err) {
@@ -333,13 +366,19 @@ class WorkerPool {
         workerState.state = WorkerState.IDLE;
         workerState.taskId = null;
 
+        // Check if marked for removal (for resize support)
+        if (workerState.markedForRemoval) {
+            this.terminateWorker(workerState).catch(_err => {
+                // Log but don't fail
+            });
+            this.processQueue();
+            return;
+        }
+
         // Process next queued task
         if (this.taskQueue.length > 0) {
             const task = this.taskQueue.shift();
             this.runTask(workerState, task.taskId, task.code, task.msg, task.timeout);
-        } else {
-            // Start idle timer
-            this.startIdleTimer(workerState);
         }
     }
 
@@ -360,38 +399,11 @@ class WorkerPool {
     }
 
     /**
-     * Start idle timer for a worker
-     * @param {object} workerState - Worker state object
-     */
-    startIdleTimer(workerState) {
-        this.clearIdleTimer(workerState);
-
-        workerState.idleTimer = setTimeout(() => {
-            // Kill idle worker if above minimum
-            if (this.workers.length > this.config.minWorkers) {
-                this.terminateWorker(workerState);
-            }
-        }, this.config.idleTimeout);
-    }
-
-    /**
-     * Clear idle timer for a worker
-     * @param {object} workerState - Worker state object
-     */
-    clearIdleTimer(workerState) {
-        if (workerState.idleTimer) {
-            clearTimeout(workerState.idleTimer);
-            workerState.idleTimer = null;
-        }
-    }
-
-    /**
      * Terminate a worker
      * @param {object} workerState - Worker state object
      */
     async terminateWorker(workerState) {
         workerState.state = WorkerState.TERMINATING;
-        this.clearIdleTimer(workerState);
 
         try {
             await workerState.worker.terminate();
@@ -407,7 +419,6 @@ class WorkerPool {
      * @param {object} workerState - Worker state object
      */
     removeWorker(workerState) {
-        this.clearIdleTimer(workerState);
         this.workers = this.workers.filter(w => w !== workerState);
     }
 
@@ -445,11 +456,14 @@ class WorkerPool {
     getStats() {
         const idleWorkers = this.workers.filter(w => w.state === WorkerState.IDLE).length;
         const busyWorkers = this.workers.filter(w => w.state === WorkerState.BUSY).length;
+        const markedForRemoval = this.workers.filter(w => w.markedForRemoval).length;
 
         return {
             totalWorkers: this.workers.length,
+            targetWorkers: this.config.numWorkers,
             idleWorkers,
             busyWorkers,
+            markedForRemoval,
             queuedTasks: this.taskQueue.length,
             activeTasks: this.timeoutManager.getActiveCount(),
             config: this.config
@@ -457,34 +471,6 @@ class WorkerPool {
     }
 }
 
-// Singleton instance
-let globalInstance = null;
-
-/**
- * Get or create the global worker pool instance
- * @param {object} config - Configuration options
- * @returns {WorkerPool} Worker pool instance
- */
-function getGlobalPool(config) {
-    if (!globalInstance) {
-        globalInstance = new WorkerPool(config);
-    }
-    return globalInstance;
-}
-
-/**
- * Shutdown the global worker pool
- * @returns {Promise<void>}
- */
-async function shutdownGlobalPool() {
-    if (globalInstance) {
-        await globalInstance.shutdown();
-        globalInstance = null;
-    }
-}
-
 module.exports = {
-    WorkerPool,
-    getGlobalPool,
-    shutdownGlobalPool
+    WorkerPool
 };

@@ -11,8 +11,7 @@
             },
             outputs: { value: 1, validate: RED.validators.number() },
             timeout: { value: 30000, validate: RED.validators.number() },
-            minWorkers: { value: 2, validate: RED.validators.number() },
-            maxWorkers: { value: 4, validate: RED.validators.number() },
+            numWorkers: { value: 3, validate: RED.validators.number() },
             maxQueueSize: { value: 100, validate: RED.validators.number() },
             noerr: { value: 0 }
         },
@@ -49,19 +48,8 @@
             });
 
             // Setup worker pool spinners
-            $('#node-input-minWorkers').spinner({ min: 1, max: 16 });
-            $('#node-input-maxWorkers').spinner({ min: 1, max: 16 });
+            $('#node-input-numWorkers').spinner({ min: 1, max: 16 });
             $('#node-input-maxQueueSize').spinner({ min: 10, max: 1000, step: 10 });
-
-            // Validation: maxWorkers >= minWorkers
-            $('#node-input-minWorkers, #node-input-maxWorkers').on('change', function() {
-                const min = parseInt($('#node-input-minWorkers').val());
-                const max = parseInt($('#node-input-maxWorkers').val());
-
-                if (max < min) {
-                    $('#node-input-maxWorkers').val(min);
-                }
-            });
 
             // Resize editor on dialog resize
             $('#dialog-form').on('dialogresize', function() {
@@ -132,15 +120,9 @@
     </div>
 
     <div class="form-row" style="padding-left: 20px;">
-        <label for="node-input-minWorkers" style="width: auto;">Min Workers</label>
-        <input type="number" id="node-input-minWorkers" style="width: 80px;" min="1" max="16" value="2">
-        <span style="margin-left: 10px; color: #999;">Always alive</span>
-    </div>
-
-    <div class="form-row" style="padding-left: 20px;">
-        <label for="node-input-maxWorkers" style="width: auto;">Max Workers</label>
-        <input type="number" id="node-input-maxWorkers" style="width: 80px;" min="1" max="16" value="4">
-        <span style="margin-left: 10px; color: #999;">Maximum concurrent</span>
+        <label for="node-input-numWorkers" style="width: auto;">Workers</label>
+        <input type="number" id="node-input-numWorkers" style="width: 80px;" min="1" max="16" value="3">
+        <span style="margin-left: 10px; color: #999;">Fixed worker count</span>
     </div>
 
     <div class="form-row" style="padding-left: 20px;">
@@ -247,10 +229,8 @@ return msg;</pre>
         <dd>Number of output ports (0-10). Use array return for multiple outputs.</dd>
         <dt>Timeout</dt>
         <dd>Maximum execution time in milliseconds (1000-300000). Worker is terminated if exceeded. Default: 30000 (30s).</dd>
-        <dt>Min Workers</dt>
-        <dd>Minimum number of worker threads kept alive (1-16). These workers are always running. Default: 2.</dd>
-        <dt>Max Workers</dt>
-        <dd>Maximum number of concurrent worker threads (1-16). Must be ≥ Min Workers. Default: 4.</dd>
+        <dt>Workers</dt>
+        <dd>Fixed number of worker threads (1-16). Each node maintains exactly this many workers. Default: 3.</dd>
         <dt>Queue Size</dt>
         <dd>Maximum number of messages queued when all workers are busy (10-1000). Default: 100.</dd>
     </dl>

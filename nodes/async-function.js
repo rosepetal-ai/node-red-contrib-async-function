@@ -5,7 +5,7 @@
  * to prevent event loop blocking.
  */
 
-const { getGlobalPool, shutdownGlobalPool } = require('./lib/worker-pool');
+const { WorkerPool } = require('./lib/worker-pool');
 const { sanitizeMessage } = require('./lib/message-serializer');
 
 /**
@@ -55,20 +55,25 @@ module.exports = function(RED) {
         node.timeout = config.timeout || 30000;
         node.name = config.name || '';
 
-        // Get worker pool (global singleton)
+        // Migrate old config to new format (backwards compatibility)
+        if (config.minWorkers !== undefined || config.maxWorkers !== undefined) {
+            config.numWorkers = config.maxWorkers || config.minWorkers || 3;
+            node.warn('Configuration migrated: minWorkers/maxWorkers → numWorkers=' + config.numWorkers);
+        }
+
+        // Create per-node worker pool
         try {
-            node.pool = getGlobalPool({
-                minWorkers: config.minWorkers || 2,
-                maxWorkers: config.maxWorkers || 4,
+            node.pool = new WorkerPool({
+                numWorkers: config.numWorkers || 3,
                 maxQueueSize: config.maxQueueSize || 100,
                 taskTimeout: node.timeout
             });
         } catch (err) {
-            node.error('Failed to initialize worker pool: ' + err.message);
+            node.error('Failed to create worker pool: ' + err.message);
             node.status({
                 fill: 'red',
                 shape: 'dot',
-                text: 'Pool init failed'
+                text: 'Pool creation failed'
             });
             return;
         }
@@ -157,8 +162,14 @@ module.exports = function(RED) {
 
             node.status({});
 
-            // Note: We don't shutdown the global pool here since other nodes may be using it
-            // The pool will be shut down when Node-RED shuts down
+            // Shutdown per-node pool
+            if (node.pool) {
+                try {
+                    await node.pool.shutdown();
+                } catch (err) {
+                    node.error('Error shutting down worker pool: ' + err.message);
+                }
+            }
 
             if (done) {
                 done();
@@ -168,13 +179,4 @@ module.exports = function(RED) {
 
     // Register the node type
     RED.nodes.registerType('async-function', AsyncFunctionNode);
-
-    // Cleanup on Node-RED shutdown
-    RED.events.on('runtime-event', (event) => {
-        if (event.id === 'runtime-stopped') {
-            shutdownGlobalPool().catch(err => {
-                console.error('Error shutting down worker pool:', err);
-            });
-        }
-    });
 };

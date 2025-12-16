@@ -3,11 +3,6 @@
   "version": "1.0.0",
   "description": "A Node-RED function node that runs code in worker threads to keep your flows responsive",
   "main": "nodes/async-function.js",
-  "scripts": {
-    "test": "mocha test/**/*_spec.js",
-    "test:coverage": "nyc npm test",
-    "lint": "eslint nodes/**/*.js test/**/*.js"
-  },
   "keywords": [
     "node-red",
     "function",
@@ -39,14 +34,5 @@
   "engines": {
     "node": ">=18.0.0"
   },
-  "dependencies": {},
-  "devDependencies": {
-    "mocha": "^10.0.0",
-    "chai": "^4.3.0",
-    "sinon": "^15.0.0",
-    "node-red": "^3.1.0",
-    "node-red-node-test-helper": "^0.3.0",
-    "eslint": "^8.0.0",
-    "nyc": "^15.1.0"
-  }
+  "dependencies": {}
 }

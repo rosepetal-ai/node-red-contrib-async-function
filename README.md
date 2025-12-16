@@ -41,8 +41,7 @@ Drop an **async function** node into your flow. Write your code just like you wo
 - **Timeout** – Maximum seconds to wait before killing the worker. Default: 30 seconds.
 
 ### Worker Pool
-- **Min Workers** – How many threads to keep ready at all times. Default: 2.
-- **Max Workers** – Maximum threads to spin up when busy. Default: 4.
+- **Workers** – Fixed number of worker threads (1-16). Each node maintains exactly this many workers. Default: 3.
 - **Queue Size** – Messages to queue when all workers are occupied. Default: 100.
 
 ## Typical Flow
@@ -137,7 +136,8 @@ The node shows you what's happening in real time:
 
 - Worker threads add about 5-10ms overhead per message.
 - Best for operations taking more than 10ms to run.
-- Workers are pooled and reused—no startup delay after the first message.
+- Each node maintains a fixed pool of workers—no startup delay or dynamic scaling overhead.
+- Workers are dedicated per-node, ensuring predictable performance.
 
 ## Error Handling
 
@@ -157,6 +157,15 @@ npm install @rosepetal/node-red-contrib-async-function
 ```
 
 Restart Node-RED and find the node in the **function** category.
+
+## Migration from Earlier Versions
+
+If you're upgrading from a version that used `minWorkers` and `maxWorkers`:
+- Your existing flows will automatically migrate to use the new `numWorkers` parameter
+- The migration uses your previous `maxWorkers` value as the fixed worker count
+- Check the Node-RED log for migration messages
+- Edit your nodes to see the new simplified "Workers" configuration field
+- **Note**: The new version uses a fixed worker pool instead of dynamic scaling for more predictable performance
 
 ## Contributing
 
