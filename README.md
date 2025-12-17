@@ -44,6 +44,12 @@ Drop an **async function** node into your flow. Write your code just like you wo
 - **Workers** – Fixed number of worker threads (1-16). Each node maintains exactly this many workers. Default: 3.
 - **Queue Size** – Messages to queue when all workers are occupied. Default: 100.
 
+### Buffer Handling
+- **Threshold** – Buffers larger than this (in KB) are automatically offloaded to shared memory for zero-copy transfer to workers. Default: 100 KB.
+  - Prevents event loop blocking when processing large binary data (images, files, etc.)
+  - Uses `/dev/shm` on Linux (RAM-backed) or `os.tmpdir()` on other platforms
+  - Automatic cleanup after task completion
+
 ## Typical Flow
 
 1. Add an **async function** node to your workspace.
@@ -138,6 +144,8 @@ The node shows you what's happening in real time:
 - Best for operations taking more than 10ms to run.
 - Each node maintains a fixed pool of workers—no startup delay or dynamic scaling overhead.
 - Workers are dedicated per-node, ensuring predictable performance.
+- **Large Buffer Optimization**: Buffers over the threshold (default 100KB) use shared memory for zero-copy transfer, preventing event loop blocking regardless of message size.
+- Event loop never blocks, even when processing multi-MB binary data (images, files, etc.).
 
 ## Error Handling
 

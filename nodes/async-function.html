@@ -13,6 +13,7 @@
             timeout: { value: 30000, validate: RED.validators.number() },
             numWorkers: { value: 3, validate: RED.validators.number() },
             maxQueueSize: { value: 100, validate: RED.validators.number() },
+            shmThreshold: { value: 100, validate: RED.validators.number() },
             noerr: { value: 0 }
         },
         inputs: 1,
@@ -26,6 +27,41 @@
         },
         oneditprepare: function() {
             const node = this;
+
+            // Create tabs system
+            const tabs = RED.tabs.create({
+                id: "async-func-tabs",
+                onchange: function(tab) {
+                    // Hide all tabs
+                    $("#async-func-tabs-content").children().hide();
+                    // Show selected tab
+                    $("#" + tab.id).show();
+
+                    // Handle editor focus for Function tab
+                    if (tab.id === "async-func-tab-function") {
+                        const editor = $("#" + tab.id).find('.node-text-editor').first();
+                        if (editor.length && node.editor) {
+                            RED.tray.resize();
+                            node.editor.focus();
+                        }
+                    }
+                }
+            });
+
+            // Add tabs
+            tabs.addTab({
+                id: "async-func-tab-setup",
+                iconClass: "fa fa-cog",
+                label: "Setup"
+            });
+
+            tabs.addTab({
+                id: "async-func-tab-function",
+                label: "Function"
+            });
+
+            // Activate Function tab by default
+            tabs.activateTab("async-func-tab-function");
 
             // Setup ACE editor
             this.editor = RED.editor.createEditor({
@@ -50,17 +86,31 @@
             // Setup worker pool spinners
             $('#node-input-numWorkers').spinner({ min: 1, max: 16 });
             $('#node-input-maxQueueSize').spinner({ min: 10, max: 1000, step: 10 });
+            $('#node-input-shmThreshold').spinner({ min: 10, max: 10000, step: 10 });
 
             // Resize editor on dialog resize
             $('#dialog-form').on('dialogresize', function() {
-                const rows = $('#dialog-form>div:not(.node-text-editor-row)');
+                const rows = $('#dialog-form>div:not(#async-func-tabs-content)');
                 let height = $('#dialog-form').height();
                 for (let i = 0; i < rows.length; i++) {
                     height -= $(rows[i]).outerHeight(true);
                 }
-                const editorRow = $('#dialog-form>div.node-text-editor-row');
-                height -= (parseInt(editorRow.css('marginTop')) + parseInt(editorRow.css('marginBottom')));
-                $('.node-text-editor').css('height', height + 'px');
+                height -= 20; // Tab container margin adjustment
+
+                // Calculate editor height (only in Function tab)
+                const editorRow = $('#async-func-tab-function .node-text-editor-row');
+                const editorMargins = parseInt(editorRow.css('marginTop')) +
+                                     parseInt(editorRow.css('marginBottom'));
+
+                // Subtract Function tab's non-editor rows
+                const functionTabRows = $('#async-func-tab-function>div:not(.node-text-editor-row)');
+                let editorHeight = height;
+                for (let i = 0; i < functionTabRows.length; i++) {
+                    editorHeight -= $(functionTabRows[i]).outerHeight(true);
+                }
+                editorHeight -= editorMargins;
+
+                $('.node-text-editor').css('height', editorHeight + 'px');
                 node.editor.resize();
             });
         },
@@ -75,71 +125,121 @@
             delete this.editor;
         },
         oneditresize: function(size) {
-            const rows = $('#dialog-form>div:not(.node-text-editor-row)');
+            // Calculate available height excluding non-tab rows
+            const rows = $('#dialog-form>div:not(#async-func-tabs-content)');
             let height = size.height;
+
             for (let i = 0; i < rows.length; i++) {
                 height -= $(rows[i]).outerHeight(true);
             }
-            const editorRow = $('#dialog-form>div.node-text-editor-row');
-            height -= (parseInt(editorRow.css('marginTop')) + parseInt(editorRow.css('marginBottom')));
-            height -= 10;
-            $('.node-text-editor').css('height', height + 'px');
-            this.editor.resize();
+
+            height -= 20; // Tab container margin adjustment
+
+            // Calculate editor height (only in Function tab)
+            const editorRow = $('#async-func-tab-function .node-text-editor-row');
+            const editorMargins = parseInt(editorRow.css('marginTop')) +
+                                 parseInt(editorRow.css('marginBottom'));
+
+            // Subtract Function tab's non-editor rows
+            const functionTabRows = $('#async-func-tab-function>div:not(.node-text-editor-row)');
+            let editorHeight = height;
+            for (let i = 0; i < functionTabRows.length; i++) {
+                editorHeight -= $(functionTabRows[i]).outerHeight(true);
+            }
+            editorHeight -= editorMargins;
+
+            $('.node-text-editor').css('height', editorHeight + 'px');
+
+            if (this.editor) {
+                this.editor.resize();
+            }
         }
     });
 </script>
 
 <script type="text/html" data-template-name="async-function">
+    <style>
+        .async-func-tabs-row {
+            margin-bottom: 0;
+        }
+    </style>
+
     <div class="form-row">
         <label for="node-input-name"><i class="fa fa-tag"></i> Name</label>
         <input type="text" id="node-input-name" placeholder="Name">
     </div>
 
-    <div class="form-row" style="margin-bottom:0;">
-        <label for="node-input-func"><i class="fa fa-wrench"></i> Function</label>
-        <input type="hidden" id="node-input-func">
+    <!-- Tab Navigation Row -->
+    <div class="form-row async-func-tabs-row">
+        <ul style="min-width: 600px; margin-bottom: 20px;" id="async-func-tabs"></ul>
     </div>
 
-    <div class="form-row node-text-editor-row">
-        <div style="height:250px; min-height:150px;" class="node-text-editor" id="node-input-func-editor"></div>
-    </div>
+    <!-- Tab Content Container -->
+    <div id="async-func-tabs-content" style="min-height: calc(100% - 95px);">
 
-    <div class="form-row">
-        <label for="node-input-outputs"><i class="fa fa-random"></i> Outputs</label>
-        <input id="node-input-outputs" style="width:60px;" value="1">
-    </div>
+        <!-- Setup Tab -->
+        <div id="async-func-tab-setup" style="display:none">
+            <div class="form-row">
+                <label for="node-input-outputs"><i class="fa fa-random"></i> Outputs</label>
+                <input id="node-input-outputs" style="width:60px;" value="1">
+            </div>
 
-    <div class="form-row">
-        <label for="node-input-timeout"><i class="fa fa-clock-o"></i> Timeout</label>
-        <input id="node-input-timeout" style="width:120px;" value="30000">
-        <span style="margin-left:5px;">ms</span>
-    </div>
+            <div class="form-row">
+                <label for="node-input-timeout"><i class="fa fa-clock-o"></i> Timeout</label>
+                <input id="node-input-timeout" style="width:120px;" value="30000">
+                <span style="margin-left:5px;">ms</span>
+            </div>
 
-    <div class="form-row">
-        <label><i class="fa fa-cogs"></i> Worker Pool</label>
-    </div>
+            <div class="form-row">
+                <label><i class="fa fa-cogs"></i> Worker Pool</label>
+            </div>
 
-    <div class="form-row" style="padding-left: 20px;">
-        <label for="node-input-numWorkers" style="width: auto;">Workers</label>
-        <input type="number" id="node-input-numWorkers" style="width: 80px;" min="1" max="16" value="3">
-        <span style="margin-left: 10px; color: #999;">Fixed worker count</span>
-    </div>
+            <div class="form-row" style="padding-left: 20px;">
+                <label for="node-input-numWorkers" style="width: auto;">Workers</label>
+                <input type="number" id="node-input-numWorkers" style="width: 80px;" min="1" max="16" value="3">
+                <span style="margin-left: 10px; color: #999;">Fixed worker count</span>
+            </div>
 
-    <div class="form-row" style="padding-left: 20px;">
-        <label for="node-input-maxQueueSize" style="width: auto;">Queue Size</label>
-        <input type="number" id="node-input-maxQueueSize" style="width: 80px;" min="10" max="1000" step="10" value="100">
-        <span style="margin-left: 10px; color: #999;">Max queued messages</span>
-    </div>
+            <div class="form-row" style="padding-left: 20px;">
+                <label for="node-input-maxQueueSize" style="width: auto;">Queue Size</label>
+                <input type="number" id="node-input-maxQueueSize" style="width: 80px;" min="10" max="1000" step="10" value="100">
+                <span style="margin-left: 10px; color: #999;">Max queued messages</span>
+            </div>
 
-    <div class="form-tips">
-        <b>Tips:</b>
-        <ul style="margin-top:5px; margin-bottom:0;">
-            <li>Code runs in a worker thread to prevent blocking</li>
-            <li>Available: <code>msg</code>, <code>return</code>, <code>async/await</code>, <code>require()</code></li>
-            <li>Not available: <code>context</code>, <code>flow</code>, <code>global</code>, <code>node</code></li>
-            <li>Return <code>msg</code> for single output, or <code>[msg1, msg2]</code> for multiple outputs</li>
-            <li>Return <code>null</code> to stop the flow</li>
-        </ul>
+            <div class="form-row">
+                <label><i class="fa fa-database"></i> Buffer Handling</label>
+            </div>
+
+            <div class="form-row" style="padding-left: 20px;">
+                <label for="node-input-shmThreshold" style="width: auto;">Threshold</label>
+                <input type="number" id="node-input-shmThreshold" style="width: 80px;" min="10" max="10000" step="10" value="100">
+                <span style="margin-left: 10px; color: #999;">KB (buffers above this use shared memory)</span>
+            </div>
+        </div>
+
+        <!-- Function Tab -->
+        <div id="async-func-tab-function" style="display:none">
+            <div class="form-row" style="margin-bottom:0;">
+                <label for="node-input-func"><i class="fa fa-wrench"></i> Function</label>
+                <input type="hidden" id="node-input-func">
+            </div>
+
+            <div class="form-row node-text-editor-row">
+                <div style="height:250px; min-height:150px;" class="node-text-editor" id="node-input-func-editor"></div>
+            </div>
+
+            <div class="form-tips">
+                <b>Tips:</b>
+                <ul style="margin-top:5px; margin-bottom:0;">
+                    <li>Code runs in a worker thread to prevent blocking</li>
+                    <li>Available: <code>msg</code>, <code>return</code>, <code>async/await</code>, <code>require()</code></li>
+                    <li>Not available: <code>context</code>, <code>flow</code>, <code>global</code>, <code>node</code></li>
+                    <li>Return <code>msg</code> for single output, or <code>[msg1, msg2]</code> for multiple outputs</li>
+                    <li>Return <code>null</code> to stop the flow</li>
+                </ul>
+            </div>
+        </div>
+
     </div>
 </script>
 
@@ -233,6 +333,8 @@ return msg;</pre>
         <dd>Fixed number of worker threads (1-16). Each node maintains exactly this many workers. Default: 3.</dd>
         <dt>Queue Size</dt>
         <dd>Maximum number of messages queued when all workers are busy (10-1000). Default: 100.</dd>
+        <dt>Buffer Threshold</dt>
+        <dd>Buffers larger than this (in KB) are automatically offloaded to shared memory for zero-copy transfer to workers (10-10000). Default: 100 KB. Prevents event loop blocking when processing large binary data (images, files, etc.).</dd>
     </dl>
 
     <h3>Status Display</h3>
@@ -240,6 +342,7 @@ return msg;</pre>
     <ul>
         <li><b>Active: X/Y</b> - X workers currently processing out of Y total workers</li>
         <li><b>Queue: Z</b> - Z messages waiting in queue</li>
+        <li><b>SHM: N</b> - N shared memory files active (shown only when >0, indicates large buffers being processed)</li>
         <li><b>Green dot</b> - Normal operation</li>
         <li><b>Yellow dot</b> - Queue getting full (>50 messages)</li>
         <li><b>Red dot</b> - Queue almost full (>90%) or error</li>
@@ -258,6 +361,9 @@ return msg;</pre>
         <li>Best for CPU-intensive operations (>10ms execution time)</li>
         <li>For simple operations, use the standard function node</li>
         <li>Workers are pooled and reused for efficiency</li>
+        <li><b>Large Buffer Optimization:</b> Buffers over the threshold use shared memory for zero-copy transfer</li>
+        <li>Event loop never blocks, even when processing multi-MB binary data (images, files, etc.)</li>
+        <li>Async message cloning yields to event loop every 100 objects, preventing blocking on complex messages</li>
     </ul>
 
     <h3>References</h3>

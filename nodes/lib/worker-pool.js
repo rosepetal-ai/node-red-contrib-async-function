@@ -8,12 +8,15 @@
 const { Worker } = require('worker_threads');
 const path = require('path');
 const TimeoutManager = require('./timeout-manager');
+const { SharedMemoryManager } = require('./shared-memory-manager');
+const { AsyncMessageSerializer } = require('./message-serializer');
 
 // Default configuration
 const DEFAULT_CONFIG = {
     numWorkers: 3,              // Fixed worker count
     taskTimeout: 30000,         // Default task timeout: 30s
     maxQueueSize: 100,          // Max queued messages
+    shmThreshold: 100 * 1024,   // 100KB buffer threshold
     workerScript: path.join(__dirname, 'worker-script.js')
 };
 
@@ -39,6 +42,10 @@ class WorkerPool {
         this.timeoutManager = new TimeoutManager();
         this.initialized = false;
         this.shuttingDown = false;
+
+        // Shared memory management
+        this.shmManager = new SharedMemoryManager({ threshold: this.config.shmThreshold });
+        this.serializer = new AsyncMessageSerializer(this.shmManager);
     }
 
     /**
@@ -178,9 +185,23 @@ class WorkerPool {
             throw new Error('Worker pool is shutting down');
         }
 
+        const taskId = this.nextTaskId++;
+
+        // Sanitize message asynchronously with shared memory offloading
+        let sanitizedMsg;
+        try {
+            sanitizedMsg = await this.serializer.sanitizeMessage(msg, null, taskId);
+        } catch (err) {
+            throw new Error(`Message sanitization failed: ${err.message}`);
+        }
+
         return new Promise((resolve, reject) => {
-            const taskId = this.nextTaskId++;
             const callback = (err, result) => {
+                // Cleanup shared memory on completion (success or error)
+                this.shmManager.cleanupTask(taskId).catch(_cleanupErr => {
+                    // Log but don't fail - task already completed
+                });
+
                 if (err) {
                     reject(err);
                 } else {
@@ -194,19 +215,23 @@ class WorkerPool {
             this.acquireWorker().then(workerState => {
                 if (workerState) {
                     // Worker available, run task immediately
-                    this.runTask(workerState, taskId, code, msg, timeout);
+                    this.runTask(workerState, taskId, code, sanitizedMsg, timeout);
                 } else {
                     // No worker available, queue the task
                     if (this.taskQueue.length >= this.config.maxQueueSize) {
                         this.callbacks.delete(taskId);
+                        // Cleanup shared memory on queue rejection
+                        this.shmManager.cleanupTask(taskId).catch(_cleanupErr => {});
                         reject(new Error('Task queue full'));
                         return;
                     }
 
-                    this.taskQueue.push({ taskId, code, msg, timeout, callback });
+                    this.taskQueue.push({ taskId, code, msg: sanitizedMsg, timeout, callback });
                 }
             }).catch(err => {
                 this.callbacks.delete(taskId);
+                // Cleanup shared memory on error
+                this.shmManager.cleanupTask(taskId).catch(_cleanupErr => {});
                 reject(err);
             });
         });
@@ -288,6 +313,11 @@ class WorkerPool {
         if (workerState.taskId !== null) {
             this.timeoutManager.cancelTimeout(workerState.taskId);
 
+            // Cleanup shared memory for crashed task
+            this.shmManager.cleanupTask(workerState.taskId).catch(_cleanupErr => {
+                // Log but don't fail
+            });
+
             const callback = this.callbacks.get(workerState.taskId);
             if (callback) {
                 this.callbacks.delete(workerState.taskId);
@@ -326,6 +356,11 @@ class WorkerPool {
      * @param {number} taskId - Task ID
      */
     async handleTimeout(workerState, taskId) {
+        // Cleanup shared memory for timed out task
+        this.shmManager.cleanupTask(taskId).catch(_cleanupErr => {
+            // Log but don't fail
+        });
+
         // Terminate the worker
         workerState.state = WorkerState.TERMINATING;
 
@@ -446,6 +481,9 @@ class WorkerPool {
         const promises = this.workers.map(ws => this.terminateWorker(ws));
         await Promise.all(promises);
 
+        // Cleanup all shared memory attachments
+        await this.shmManager.cleanupAll();
+
         this.initialized = false;
     }
 
@@ -466,6 +504,7 @@ class WorkerPool {
             markedForRemoval,
             queuedTasks: this.taskQueue.length,
             activeTasks: this.timeoutManager.getActiveCount(),
+            sharedMemory: this.shmManager.getStats(),
             config: this.config
         };
     }

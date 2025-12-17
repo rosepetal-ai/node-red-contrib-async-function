@@ -6,7 +6,6 @@
  */
 
 const { WorkerPool } = require('./lib/worker-pool');
-const { sanitizeMessage } = require('./lib/message-serializer');
 
 /**
  * Update node status with pool statistics
@@ -16,8 +15,11 @@ function updateStatus(node) {
 
     const stats = node.pool.getStats();
 
-    // Format: "Active: 2/4 | Queue: 5"
-    const statusText = `Active: ${stats.busyWorkers}/${stats.totalWorkers} | Queue: ${stats.queuedTasks}`;
+    // Format: "Active: 2/4 | Queue: 5 | SHM: 3" (SHM only shown if >0 files)
+    let statusText = `Active: ${stats.busyWorkers}/${stats.totalWorkers} | Queue: ${stats.queuedTasks}`;
+    if (stats.sharedMemory && stats.sharedMemory.activeFiles > 0) {
+        statusText += ` | SHM: ${stats.sharedMemory.activeFiles}`;
+    }
 
     // Color logic
     let fill = 'green';
@@ -66,7 +68,8 @@ module.exports = function(RED) {
             node.pool = new WorkerPool({
                 numWorkers: config.numWorkers || 3,
                 maxQueueSize: config.maxQueueSize || 100,
-                taskTimeout: node.timeout
+                taskTimeout: node.timeout,
+                shmThreshold: config.shmThreshold || 100 * 1024  // Default 100KB
             });
         } catch (err) {
             node.error('Failed to create worker pool: ' + err.message);
@@ -105,13 +108,10 @@ module.exports = function(RED) {
             };
 
             try {
-                // Sanitize message for worker thread
-                const clonedMsg = sanitizeMessage(msg, node);
-
-                // Execute in worker pool
+                // Execute in worker pool (sanitization handled internally)
                 const result = await node.pool.executeTask(
                     node.func,
-                    clonedMsg,
+                    msg,
                     node.timeout
                 );
 

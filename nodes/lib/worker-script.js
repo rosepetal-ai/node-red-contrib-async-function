@@ -3,28 +3,38 @@
  *
  * Executes user-provided JavaScript code in an isolated worker thread.
  * Handles message communication with the main thread.
+ * Restores buffers from shared memory before execution.
  */
 
 const { parentPort } = require('worker_threads');
+const { SharedMemoryManager } = require('./shared-memory-manager');
+const { AsyncMessageSerializer } = require('./message-serializer');
 
 // Track worker state
 let isTerminating = false;
+
+// Shared memory management (for buffer restoration)
+const shmManager = new SharedMemoryManager();
+const serializer = new AsyncMessageSerializer(shmManager);
 
 /**
  * Execute user code safely
  *
  * @param {string} code - User function code
- * @param {object} msg - Message object
+ * @param {object} msg - Message object (may contain shared memory descriptors)
  * @returns {object|Array} Result or array of results for multiple outputs
  */
 async function executeUserCode(code, msg) {
+    // Restore buffers from shared memory descriptors
+    const restoredMsg = await serializer.restoreBuffers(msg);
+
     // Create a function from the user code
     // The function receives 'msg' as parameter and can use return
     const AsyncFunction = (async function() {}).constructor;
     const userFunction = new AsyncFunction('msg', code);
 
-    // Execute the function
-    const result = await userFunction(msg);
+    // Execute the function with restored message
+    const result = await userFunction(restoredMsg);
 
     return result;
 }
