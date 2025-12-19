@@ -1,10 +1,15 @@
 /**
  * Async Message Serializer
  *
- * Safely clones messages for worker thread communication with async operation.
- * Offloads large buffers to shared memory to prevent event loop blocking.
- * Handles non-serializable properties, circular references, and special types.
+ * Fast message cloning for worker thread communication.
+ * Matches the shared-memory + msg-copy semantics used by the python executor "hot mode":
+ * - Buffers (and typed arrays) can be offloaded to shared memory with descriptors
+ * - Base64 fallback for shared-memory failures
+ * - Circular references preserved via WeakMap
  */
+
+const SHARED_SENTINEL_KEY = '__rosepetal_shm_path__';
+const SHARED_BASE64_KEY = '__rosepetal_base64__';
 
 /**
  * Async Message Serializer Class
@@ -18,9 +23,7 @@ class AsyncMessageSerializer {
      */
     constructor(sharedMemoryManager, options = {}) {
         this.shmManager = sharedMemoryManager;
-        this.yieldInterval = options.yieldInterval || 100; // Yield every 100 objects
-        this.maxDepth = options.maxDepth || 100; // Prevent stack overflow
-        this.operationCount = 0; // Track operations for yielding
+        this.maxDepth = options.maxDepth || 0;
     }
 
     /**
@@ -35,15 +38,11 @@ class AsyncMessageSerializer {
             return msg;
         }
 
-        // Reset operation counter
-        this.operationCount = 0;
-
-        // Use WeakMap for circular tracking (allows storing replacement values)
         const seen = new WeakMap();
         const bufferIndex = { value: 0 }; // Mutable counter for buffer indexing
 
         try {
-            return await this.cloneValue(msg, seen, 0, bufferIndex, taskId, node, '');
+            return await this.cloneValue(msg, seen, bufferIndex, taskId, 0);
         } catch (err) {
             if (node) {
                 node.warn(`Message cloning failed: ${err.message}, creating minimal message`);
@@ -63,153 +62,67 @@ class AsyncMessageSerializer {
      * @param {string} path - Current property path (for warnings)
      * @returns {Promise<*>} Cloned value
      */
-    async cloneValue(value, seen, depth, bufferIndex, taskId, node, path) {
-        // Check depth limit to prevent stack overflow
-        if (depth > this.maxDepth) {
-            if (node) {
-                node.warn(`Maximum depth (${this.maxDepth}) exceeded at '${path}', truncating`);
-            }
-            return '[Max Depth Exceeded]';
+    async cloneValue(value, seen, bufferIndex, taskId, depth) {
+        // Optional depth guard (disabled by default for speed)
+        if (this.maxDepth > 0 && depth > this.maxDepth) {
+            return null;
         }
 
-        // Yield to event loop periodically
-        this.operationCount++;
-        if (this.operationCount % this.yieldInterval === 0) {
-            await this.yieldToEventLoop();
-        }
-
-        // Handle null/undefined
         if (value === null || value === undefined) {
             return value;
         }
 
         // Handle primitives
         const type = typeof value;
-        if (type === 'string' || type === 'number' || type === 'boolean') {
+        if (type === 'string' || type === 'number' || type === 'boolean' || type === 'bigint') {
             return value;
         }
 
-        // Skip functions
-        if (type === 'function') {
-            if (node) {
-                node.warn(`Property '${path}' is a function and will be omitted`);
-            }
+        // Drop non-cloneable types
+        if (type === 'function' || type === 'symbol') {
             return undefined;
         }
 
-        // Skip symbols
-        if (type === 'symbol') {
-            if (node) {
-                node.warn(`Property '${path}' is a symbol and will be omitted`);
-            }
-            return undefined;
-        }
-
-        // Handle dates
-        if (value instanceof Date) {
-            return new Date(value);
-        }
-
-        // Handle buffers - OFFLOAD TO SHARED MEMORY IF LARGE
+        // Buffers + typed arrays: offload to shared memory when above threshold
         if (Buffer.isBuffer(value)) {
-            const threshold = this.shmManager.threshold;
-
-            if (value.length > threshold) {
-                // Large buffer - offload to shared memory
-                try {
-                    const descriptor = await this.shmManager.writeBuffer(value, taskId, bufferIndex.value++);
-                    // If writeBuffer returns a descriptor object, use it; otherwise it fell back to inline buffer
-                    return descriptor;
-                } catch (err) {
-                    if (node) {
-                        node.warn(`Failed to offload buffer at '${path}': ${err.message}, using inline copy`);
-                    }
-                    return Buffer.from(value);
-                }
-            } else {
-                // Small buffer - inline copy
-                return Buffer.from(value);
-            }
+            return await this.shmManager.writeBuffer(value, taskId, bufferIndex.value++);
         }
 
-        // Handle arrays
-        if (Array.isArray(value)) {
-            // Check for circular reference
-            if (seen.has(value)) {
-                if (node) {
-                    node.warn(`Circular reference detected at '${path}'`);
-                }
-                return '[Circular]';
-            }
-
-            seen.set(value, true);
-
-            const result = [];
-            for (let i = 0; i < value.length; i++) {
-                const clonedItem = await this.cloneValue(
-                    value[i],
-                    seen,
-                    depth + 1,
-                    bufferIndex,
-                    taskId,
-                    node,
-                    `${path}[${i}]`
-                );
-                if (clonedItem !== undefined) {
-                    result.push(clonedItem);
-                }
-            }
-
-            return result;
+        if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+            const asBuffer = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+            return await this.shmManager.writeBuffer(asBuffer, taskId, bufferIndex.value++);
         }
 
-        // Handle objects
         if (type === 'object') {
-            // Check for circular reference
+            // Preserve circular references
             if (seen.has(value)) {
-                if (node) {
-                    node.warn(`Circular reference detected at '${path}'`);
-                }
-                return '[Circular]';
+                return seen.get(value);
             }
 
-            seen.set(value, true);
+            const clone = Array.isArray(value) ? [] : {};
+            seen.set(value, clone);
 
-            const result = {};
-            const entries = Object.entries(value);
+            if (Array.isArray(value)) {
+                for (let i = 0; i < value.length; i++) {
+                    const clonedItem = await this.cloneValue(value[i], seen, bufferIndex, taskId, depth + 1);
+                    clone[i] = clonedItem === undefined ? null : clonedItem;
+                }
+                return clone;
+            }
 
-            for (let i = 0; i < entries.length; i++) {
-                const [key, val] = entries[i];
-                const clonedVal = await this.cloneValue(
-                    val,
-                    seen,
-                    depth + 1,
-                    bufferIndex,
-                    taskId,
-                    node,
-                    path ? `${path}.${key}` : key
-                );
+            const keys = Object.keys(value);
+            for (let i = 0; i < keys.length; i++) {
+                const key = keys[i];
+                const clonedVal = await this.cloneValue(value[key], seen, bufferIndex, taskId, depth + 1);
                 if (clonedVal !== undefined) {
-                    result[key] = clonedVal;
+                    clone[key] = clonedVal;
                 }
             }
 
-            return result;
+            return clone;
         }
 
-        // Unknown type
-        if (node) {
-            node.warn(`Property '${path}' has unknown type '${type}' and will be omitted`);
-        }
         return undefined;
-    }
-
-    /**
-     * Yield to event loop to prevent blocking
-     * @returns {Promise<void>}
-     */
-    async yieldToEventLoop() {
-        return new Promise(resolve => setImmediate(resolve));
     }
 
     /**
@@ -218,6 +131,11 @@ class AsyncMessageSerializer {
      * @returns {Promise<*>} Value with buffers restored
      */
     async restoreBuffers(value) {
+        const seen = new WeakMap();
+        return this.restoreValue(value, seen);
+    }
+
+    async restoreValue(value, seen) {
         // Handle null/undefined
         if (value === null || value === undefined) {
             return value;
@@ -225,12 +143,7 @@ class AsyncMessageSerializer {
 
         // Handle primitives
         const type = typeof value;
-        if (type === 'string' || type === 'number' || type === 'boolean') {
-            return value;
-        }
-
-        // Handle dates
-        if (value instanceof Date) {
+        if (type === 'string' || type === 'number' || type === 'boolean' || type === 'bigint') {
             return value;
         }
 
@@ -239,30 +152,55 @@ class AsyncMessageSerializer {
             return value;
         }
 
-        // Handle shared memory descriptor
-        if (value && typeof value === 'object' && value.__rosepetal_shm_path__) {
-            try {
-                return await this.shmManager.readBuffer(value);
-            } catch (err) {
-                throw new Error(`Failed to restore buffer from shared memory: ${err.message}`);
-            }
-        }
-
         // Handle arrays
         if (Array.isArray(value)) {
-            const result = [];
-            for (const item of value) {
-                result.push(await this.restoreBuffers(item));
+            if (seen.has(value)) {
+                return seen.get(value);
             }
+
+            const result = new Array(value.length);
+            seen.set(value, result);
+
+            for (let i = 0; i < value.length; i++) {
+                result[i] = await this.restoreValue(value[i], seen);
+            }
+
             return result;
         }
 
         // Handle objects
         if (type === 'object') {
-            const result = {};
-            for (const [key, val] of Object.entries(value)) {
-                result[key] = await this.restoreBuffers(val);
+            // Shared memory descriptor
+            if (Object.prototype.hasOwnProperty.call(value, SHARED_SENTINEL_KEY)) {
+                try {
+                    return await this.shmManager.readBuffer(value, { deleteAfterRead: true });
+                } catch (_err) {
+                    return Buffer.alloc(0);
+                }
             }
+
+            // Base64 fallback
+            if (Object.prototype.hasOwnProperty.call(value, SHARED_BASE64_KEY)) {
+                try {
+                    return Buffer.from(value[SHARED_BASE64_KEY] || '', 'base64');
+                } catch (_err) {
+                    return Buffer.alloc(0);
+                }
+            }
+
+            if (seen.has(value)) {
+                return seen.get(value);
+            }
+
+            const result = {};
+            seen.set(value, result);
+
+            const entries = Object.entries(value);
+            for (let i = 0; i < entries.length; i++) {
+                const [key, val] = entries[i];
+                result[key] = await this.restoreValue(val, seen);
+            }
+
             return result;
         }
 

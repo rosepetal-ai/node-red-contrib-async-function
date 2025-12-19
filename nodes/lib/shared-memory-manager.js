@@ -12,14 +12,18 @@ const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
 
+const SHARED_SENTINEL_KEY = '__rosepetal_shm_path__';
+const SHARED_BASE64_KEY = '__rosepetal_base64__';
+
 class SharedMemoryManager {
     /**
      * Create a shared memory manager
      * @param {object} options - Configuration options
      */
     constructor(options = {}) {
-        this.threshold = options.threshold || 100 * 1024; // 100KB default
+        this.threshold = options.threshold ?? 100 * 1024; // 100KB default
         this.shmPath = this.detectShmPath();
+        this.trackAttachments = options.trackAttachments !== false;
         this.taskAttachments = new Map(); // taskId → Set<filePath>
         this.globalAttachments = new Set(); // All active files
         this.performanceMetrics = {
@@ -30,7 +34,9 @@ class SharedMemoryManager {
         };
 
         // Cleanup orphaned files from previous crashes
-        this.cleanupOrphanedFiles();
+        if (options.cleanupOrphanedFiles !== false) {
+            this.cleanupOrphanedFiles();
+        }
     }
 
     /**
@@ -75,9 +81,9 @@ class SharedMemoryManager {
      */
     async writeBuffer(buffer, taskId, bufferIndex) {
         // Check if buffer exceeds threshold
-        if (buffer.length <= this.threshold) {
+        if (this.threshold > 0 && buffer.length <= this.threshold) {
             // Return inline buffer (no shared memory needed)
-            return Buffer.from(buffer);
+            return buffer;
         }
 
         try {
@@ -97,21 +103,21 @@ class SharedMemoryManager {
 
             // Return descriptor
             return {
-                __rosepetal_shm_path__: filePath,
+                [SHARED_SENTINEL_KEY]: filePath,
                 length: buffer.length
             };
 
         } catch (err) {
-            // Graceful fallback on error
-            if (err.code === 'ENOSPC') {
-                console.warn(`Shared memory full (ENOSPC), falling back to inline buffer for task ${taskId}`);
-                return Buffer.from(buffer); // Return inline copy
-            } else if (err.code === 'EACCES') {
-                console.error(`Shared memory permission denied (EACCES), falling back to inline buffer for task ${taskId}`);
-                return Buffer.from(buffer); // Return inline copy
+            // Fallback to base64 (slower, but keeps payload serializable)
+            try {
+                return {
+                    [SHARED_BASE64_KEY]: buffer.toString('base64'),
+                    length: buffer.length
+                };
+            } catch (_encodeErr) {
+                // Last resort: inline buffer
+                return buffer;
             }
-            // Rethrow other errors
-            throw new Error(`Failed to write buffer to shared memory: ${err.message}`);
         }
     }
 
@@ -120,17 +126,17 @@ class SharedMemoryManager {
      * @param {object} descriptor - Buffer descriptor
      * @returns {Promise<Buffer>} Buffer contents
      */
-    async readBuffer(descriptor) {
+    async readBuffer(descriptor, options = {}) {
         // Validate descriptor
         if (!descriptor || typeof descriptor !== 'object') {
             throw new Error('Invalid descriptor: must be an object');
         }
 
-        if (!descriptor.__rosepetal_shm_path__) {
-            throw new Error('Invalid descriptor: missing __rosepetal_shm_path__');
+        if (!descriptor[SHARED_SENTINEL_KEY]) {
+            throw new Error(`Invalid descriptor: missing ${SHARED_SENTINEL_KEY}`);
         }
 
-        const filePath = descriptor.__rosepetal_shm_path__;
+        const filePath = descriptor[SHARED_SENTINEL_KEY];
 
         try {
             // Read file asynchronously
@@ -139,6 +145,14 @@ class SharedMemoryManager {
             // Validate length
             if (descriptor.length && buffer.length !== descriptor.length) {
                 console.warn(`Buffer length mismatch: expected ${descriptor.length}, got ${buffer.length}`);
+            }
+
+            if (options.deleteAfterRead) {
+                await fs.unlink(filePath).catch(unlinkErr => {
+                    if (unlinkErr.code !== 'ENOENT') {
+                        console.warn(`Failed to unlink shared memory file ${filePath}: ${unlinkErr.message}`);
+                    }
+                });
             }
 
             return buffer;
@@ -157,6 +171,10 @@ class SharedMemoryManager {
      * @param {string} filePath - File path to track
      */
     trackAttachment(taskId, filePath) {
+        if (!this.trackAttachments) {
+            return;
+        }
+
         // Create task attachment set if doesn't exist
         if (!this.taskAttachments.has(taskId)) {
             this.taskAttachments.set(taskId, new Set());
@@ -188,14 +206,19 @@ class SharedMemoryManager {
                 fs.unlink(filePath)
                     .then(() => {
                         this.globalAttachments.delete(filePath);
-                        this.performanceMetrics.totalFiles--;
+                        this.performanceMetrics.totalFiles = Math.max(0, this.performanceMetrics.totalFiles - 1);
                         this.performanceMetrics.filesDeleted++;
                     })
                     .catch(err => {
-                        // Log but don't fail
-                        if (err.code !== 'ENOENT') {
-                            console.warn(`Failed to cleanup file ${filePath}: ${err.message}`);
+                        if (err.code === 'ENOENT') {
+                            // File already cleaned up (e.g. worker deleted after read)
+                            this.globalAttachments.delete(filePath);
+                            this.performanceMetrics.totalFiles = Math.max(0, this.performanceMetrics.totalFiles - 1);
+                            this.performanceMetrics.filesDeleted++;
+                            return;
                         }
+
+                        console.warn(`Failed to cleanup file ${filePath}: ${err.message}`);
                     })
             );
         }

@@ -7,6 +7,136 @@
 
 const { WorkerPool } = require('./lib/worker-pool');
 
+function extractMsgKeysFromCode(code) {
+    const keys = new Set();
+    if (typeof code !== 'string' || !code.trim()) {
+        return keys;
+    }
+
+    // msg['payload'] or msg["payload"]
+    const bracketRegex = /msg\[['"]([A-Za-z0-9_.$:-]+)['"]\]/g;
+    let match = bracketRegex.exec(code);
+    while (match) {
+        keys.add(match[1]);
+        match = bracketRegex.exec(code);
+    }
+
+    // msg.payload style access
+    const dotRegex = /msg\.([A-Za-z_][A-Za-z0-9_]*)/g;
+    match = dotRegex.exec(code);
+    while (match) {
+        keys.add(match[1]);
+        match = dotRegex.exec(code);
+    }
+
+    return keys;
+}
+
+function buildWorkerInputMsg(originalMsg, code) {
+    if (!originalMsg || typeof originalMsg !== 'object') {
+        return originalMsg;
+    }
+
+    const keys = extractMsgKeysFromCode(code);
+
+    // If we cannot confidently determine keys, fall back to full message
+    if (!keys || keys.size === 0) {
+        return originalMsg;
+    }
+
+    const subset = {};
+    keys.forEach((key) => {
+        if (Object.prototype.hasOwnProperty.call(originalMsg, key)) {
+            subset[key] = originalMsg[key];
+        }
+    });
+
+    // Preserve _msgid for traceability
+    if (Object.prototype.hasOwnProperty.call(originalMsg, '_msgid') && !Object.prototype.hasOwnProperty.call(subset, '_msgid')) {
+        subset._msgid = originalMsg._msgid;
+    }
+
+    return subset;
+}
+
+function normalizePerformanceValue(value) {
+    const numeric = Number(value);
+    return Number.isFinite(numeric) ? numeric : 0;
+}
+
+function hrtimeDiffToMs(start) {
+    if (typeof start !== 'bigint') {
+        return 0;
+    }
+    const diff = process.hrtime.bigint() - start;
+    return Number(diff) / 1e6;
+}
+
+function applyPerformanceMetrics(node, originalMsg, targetMsg, performance) {
+    if (!performance || typeof performance !== 'object') {
+        return;
+    }
+
+    const label = (typeof node.name === 'string' && node.name.trim()) ? node.name.trim() : 'async function';
+    if (!label) {
+        return;
+    }
+
+    const copyPerformance = (source, destination) => {
+        if (source && typeof source === 'object' && !Array.isArray(source)) {
+            Object.keys(source).forEach((key) => {
+                destination[key] = source[key];
+            });
+        }
+    };
+
+    const collected = {};
+    if (originalMsg && originalMsg !== targetMsg) {
+        copyPerformance(originalMsg.performance, collected);
+    }
+    copyPerformance(targetMsg.performance, collected);
+
+    collected[label] = {
+        transferToPythonMs: normalizePerformanceValue(performance.transfer_to_python_ms ?? performance.transferToPythonMs),
+        executionMs: normalizePerformanceValue(performance.execution_ms ?? performance.executionMs),
+        transferToJsMs: normalizePerformanceValue(performance.transfer_to_js_ms ?? performance.transferToJsMs),
+        totalMs: normalizePerformanceValue(performance.totalMs ?? performance.total_ms ?? performance.total)
+    };
+
+    targetMsg.performance = collected;
+}
+
+function mergeResult(originalMsg, resultData) {
+    if (resultData === null || resultData === undefined) {
+        return resultData;
+    }
+
+    if (Array.isArray(resultData)) {
+        return resultData.map((entry) => mergeResult(originalMsg, entry));
+    }
+
+    if (typeof resultData === 'object') {
+        return Object.assign({}, originalMsg, resultData);
+    }
+
+    return resultData;
+}
+
+function applyPerformanceToResult(node, originalMsg, resultData, performance) {
+    if (resultData === null || resultData === undefined) {
+        return;
+    }
+
+    if (Array.isArray(resultData)) {
+        resultData.forEach((entry) => applyPerformanceToResult(node, originalMsg, entry, performance));
+        return;
+    }
+
+    if (typeof resultData === 'object') {
+        applyPerformanceMetrics(node, originalMsg, resultData, performance);
+    }
+}
+
 /**
  * Update node status with pool statistics
  */
@@ -69,7 +199,7 @@ module.exports = function(RED) {
                 numWorkers: config.numWorkers || 3,
                 maxQueueSize: config.maxQueueSize || 100,
                 taskTimeout: node.timeout,
-                shmThreshold: config.shmThreshold || 100 * 1024  // Default 100KB
+                shmThreshold: 0
             });
         } catch (err) {
             node.error('Failed to create worker pool: ' + err.message);
@@ -107,31 +237,38 @@ module.exports = function(RED) {
                 }
             };
 
-            try {
-                // Execute in worker pool (sanitization handled internally)
-                const result = await node.pool.executeTask(
-                    node.func,
-                    msg,
-                    node.timeout
-                );
+            const timing = { start: process.hrtime.bigint() };
+            const workerMsg = buildWorkerInputMsg(msg, node.func);
 
-                // Handle result
-                if (result === null || result === undefined) {
-                    // No output
-                    done();
-                } else if (Array.isArray(result)) {
-                    // Multiple outputs
-                    send(result);
-                    done();
+            try {
+                const payload = await node.pool.executeTask(node.func, workerMsg, node.timeout);
+
+                let resultData;
+                let performanceData = null;
+
+                if (payload && typeof payload === 'object' && Object.prototype.hasOwnProperty.call(payload, 'result')) {
+                    resultData = payload.result;
+                    performanceData = payload.performance || null;
                 } else {
-                    // Single output
-                    send(result);
-                    done();
+                    resultData = payload;
                 }
 
-                // Update status
-                updateStatus(node);
+                if (resultData === null || resultData === undefined) {
+                    done();
+                    return;
+                }
 
+                const totalMs = hrtimeDiffToMs(timing.start);
+                const mergedPerformance = Object.assign({}, performanceData || {});
+                mergedPerformance.totalMs = totalMs;
+
+                const output = mergeResult(msg, resultData);
+                applyPerformanceToResult(node, msg, output, mergedPerformance);
+
+                send(output);
+                done();
+
+                updateStatus(node);
             } catch (err) {
                 // Handle errors
                 node.status({

@@ -16,7 +16,7 @@ const DEFAULT_CONFIG = {
     numWorkers: 3,              // Fixed worker count
     taskTimeout: 30000,         // Default task timeout: 30s
     maxQueueSize: 100,          // Max queued messages
-    shmThreshold: 100 * 1024,   // 100KB buffer threshold
+    shmThreshold: 0,            // Always use shared memory for Buffers
     workerScript: path.join(__dirname, 'worker-script.js')
 };
 
@@ -74,7 +74,11 @@ class WorkerPool {
     createWorker() {
         return new Promise((resolve, reject) => {
             try {
-                const worker = new Worker(this.config.workerScript);
+                const worker = new Worker(this.config.workerScript, {
+                    workerData: {
+                        shmThreshold: this.config.shmThreshold
+                    }
+                });
 
                 const workerState = {
                     worker,
@@ -187,16 +191,8 @@ class WorkerPool {
 
         const taskId = this.nextTaskId++;
 
-        // Sanitize message asynchronously with shared memory offloading
-        let sanitizedMsg;
-        try {
-            sanitizedMsg = await this.serializer.sanitizeMessage(msg, null, taskId);
-        } catch (err) {
-            throw new Error(`Message sanitization failed: ${err.message}`);
-        }
-
         return new Promise((resolve, reject) => {
-            const callback = (err, result) => {
+            const callback = (err, payload) => {
                 // Cleanup shared memory on completion (success or error)
                 this.shmManager.cleanupTask(taskId).catch(_cleanupErr => {
                     // Log but don't fail - task already completed
@@ -205,7 +201,7 @@ class WorkerPool {
                 if (err) {
                     reject(err);
                 } else {
-                    resolve(result);
+                    resolve(payload);
                 }
             };
 
@@ -215,7 +211,7 @@ class WorkerPool {
             this.acquireWorker().then(workerState => {
                 if (workerState) {
                     // Worker available, run task immediately
-                    this.runTask(workerState, taskId, code, sanitizedMsg, timeout);
+                    this.runTask(workerState, taskId, code, msg, timeout);
                 } else {
                     // No worker available, queue the task
                     if (this.taskQueue.length >= this.config.maxQueueSize) {
@@ -226,7 +222,7 @@ class WorkerPool {
                         return;
                     }
 
-                    this.taskQueue.push({ taskId, code, msg: sanitizedMsg, timeout, callback });
+                    this.taskQueue.push({ taskId, code, msg, timeout, callback });
                 }
             }).catch(err => {
                 this.callbacks.delete(taskId);
@@ -250,17 +246,27 @@ class WorkerPool {
         workerState.state = WorkerState.BUSY;
         workerState.taskId = taskId;
 
-        // Start timeout
-        this.timeoutManager.startTimeout(taskId, timeout, () => {
-            this.handleTimeout(workerState, taskId);
-        });
+        this.serializer.sanitizeMessage(msg, null, taskId).then(sanitizedMsg => {
+            // Start timeout after message preparation (matches hot-mode behavior)
+            this.timeoutManager.startTimeout(taskId, timeout, () => {
+                this.handleTimeout(workerState, taskId);
+            });
 
-        // Send task to worker
-        workerState.worker.postMessage({
-            type: 'execute',
-            taskId,
-            code,
-            msg
+            // Send task to worker
+            workerState.worker.postMessage({
+                type: 'execute',
+                taskId,
+                code,
+                msg: sanitizedMsg
+            });
+        }).catch(err => {
+            // Fail task if message prep fails
+            const callback = this.callbacks.get(taskId);
+            if (callback) {
+                this.callbacks.delete(taskId);
+                callback(new Error(`Message sanitization failed: ${err.message}`), null);
+            }
+            this.recycleWorker(workerState);
         });
     }
 
@@ -270,7 +276,7 @@ class WorkerPool {
      * @param {object} message - Message from worker
      */
     handleWorkerMessage(workerState, message) {
-        const { type, taskId, result, error } = message;
+        const { type, taskId, result, error, performance } = message;
 
         if (type === 'result') {
             // Task completed successfully
@@ -279,7 +285,15 @@ class WorkerPool {
             const callback = this.callbacks.get(taskId);
             if (callback) {
                 this.callbacks.delete(taskId);
-                callback(null, result);
+                // Recycle worker immediately; result restoration happens asynchronously
+                this.recycleWorker(workerState);
+
+                this.serializer.restoreBuffers(result).then(restoredResult => {
+                    callback(null, { result: restoredResult, performance: performance || null });
+                }).catch(restoreErr => {
+                    callback(restoreErr instanceof Error ? restoreErr : new Error(String(restoreErr)), null);
+                });
+                return;
             }
 
             // Return worker to idle state
