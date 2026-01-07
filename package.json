@@ -2,7 +2,10 @@
   "name": "@rosepetal/node-red-contrib-async-function",
   "version": "1.0.0",
   "description": "A Node-RED function node that runs code in worker threads to keep your flows responsive",
-  "main": "nodes/async-function.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rosepetal-ai/node-red-contrib-async-function.git"
+  },
   "keywords": [
     "node-red",
     "function",
@@ -13,26 +16,26 @@
     "rosepetal"
   ],
   "author": "Rosepetal SL (https://www.rosepetal.ai)",
+  "contributors": [
+    {
+      "name": "Nil Allue",
+      "email": "nil.allue@rosepetal.ai"
+    }
+  ],
   "license": "Apache-2.0",
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/rosepetal-ai/node-red-contrib-async-function.git"
-  },
+  
   "bugs": {
     "url": "https://github.com/rosepetal-ai/node-red-contrib-async-function/issues"
   },
   "homepage": "https://github.com/rosepetal-ai/node-red-contrib-async-function#readme",
-  "publishConfig": {
-    "access": "public"
+  "engines": {
+    "node": ">=18.0.0"
   },
   "node-red": {
     "version": ">=2.0.0",
     "nodes": {
       "async-function": "nodes/async-function.js"
     }
-  },
-  "engines": {
-    "node": ">=18.0.0"
   },
   "dependencies": {}
 }
