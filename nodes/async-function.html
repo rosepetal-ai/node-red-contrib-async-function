@@ -236,6 +236,8 @@
 
             // Hook into editableList add/remove events and variable name changes
             $('#node-input-libs-container').on('editablelistitemadd editablelistitemremove', updateEditorModules);
+            // Ensure configured module vars are registered in the editor on load
+            updateEditorModules();
 
             // Resize editor on dialog resize
             $('#dialog-form').on('dialogresize', function() {
