@@ -11,6 +11,7 @@ Run heavy computations in Node-RED without slowing down your flows. This node wo
 - See real-time stats showing active workers and queue depth.
 - Configure worker pools to match your workload.
 - Handle bursts of messages smoothly with automatic queuing.
+- Add external npm modules with auto-installation support.
 
 ## Before You Start
 
@@ -44,6 +45,21 @@ Drop an **async function** node into your flow. Write your code just like you wo
 - **Workers** – Fixed number of worker threads (1-16). Each node maintains exactly this many workers. Default: 3.
 - **Queue Size** – Messages to queue when all workers are occupied. Default: 100.
 
+### Modules
+Add external npm modules that will be available in your code. Similar to the standard Node-RED function node's module feature.
+
+- **Module** – The npm package name (e.g., `lodash`, `moment`, `@scope/package`).
+- **Import as** – Variable name to access the module in your code.
+
+Modules are auto-installed to `~/.node-red` on first deploy if not already available. Use them directly in your code without `require()`:
+
+```javascript
+// With modules: lodash → _, moment → moment
+const doubled = _.map(msg.payload, x => x * 2);
+msg.timestamp = moment().format('YYYY-MM-DD');
+return msg;
+```
+
 ### Buffer Handling
 - **Buffers** – Any `Buffer` in `msg` is transferred through shared memory (`/dev/shm` on Linux, otherwise `os.tmpdir()`), with base64 fallback if needed.
 
@@ -65,6 +81,7 @@ Drop an **async function** node into your flow. Write your code just like you wo
 - `return` – Return a single message or array of messages
 - `async/await` – For asynchronous operations
 - `require()` – Load Node.js built-in or installed modules
+- Configured modules – Available directly as variables (no require needed)
 - `console` – Logging functions
 - `setTimeout`, `setInterval` – Timers
 
@@ -82,6 +99,17 @@ return msg;
 ```
 
 ### Using External Modules
+
+**Option 1: Configure in Setup tab (recommended)**
+
+Add the module in the Modules section of the Setup tab, then use it directly:
+```javascript
+// Module configured: lodash → _
+msg.payload = _.sortBy(msg.payload, 'name');
+return msg;
+```
+
+**Option 2: Traditional require()**
 ```javascript
 const crypto = require('crypto');
 

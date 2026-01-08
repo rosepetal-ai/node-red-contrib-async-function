@@ -30,8 +30,57 @@ const shmManager = new SharedMemoryManager({
 const serializer = new AsyncMessageSerializer(shmManager);
 
 // Cache compiled user code per worker for hot-path performance
+// Bounded LRU-style cache to prevent memory leaks with varied code inputs
 const AsyncFunction = (async function() {}).constructor;
-const compiledCodeCache = new Map(); // code string -> AsyncFunction(msg) { ... }
+const MAX_CACHE_SIZE = 100;
+const compiledCodeCache = new Map(); // code string -> AsyncFunction(msg, ...modules) { ... }
+
+function getCachedFunction(cacheKey) {
+    const fn = compiledCodeCache.get(cacheKey);
+    if (fn) {
+        // Move to end for LRU behavior (delete + re-add)
+        compiledCodeCache.delete(cacheKey);
+        compiledCodeCache.set(cacheKey, fn);
+    }
+    return fn;
+}
+
+function setCachedFunction(cacheKey, fn) {
+    // Evict oldest entries if at capacity
+    if (compiledCodeCache.size >= MAX_CACHE_SIZE) {
+        const oldestKey = compiledCodeCache.keys().next().value;
+        compiledCodeCache.delete(oldestKey);
+    }
+    compiledCodeCache.set(cacheKey, fn);
+}
+
+// Load configured external modules
+const loadedModules = {};
+const moduleVars = [];
+const moduleValues = [];
+
+// Add Node-RED user directory to module search path for external modules
+if (workerData && workerData.nodeRedUserDir) {
+    const path = require('path');
+    const nodeModulesPath = path.join(workerData.nodeRedUserDir, 'node_modules');
+    if (!module.paths.includes(nodeModulesPath)) {
+        module.paths.unshift(nodeModulesPath);
+    }
+}
+
+if (workerData && workerData.libs && Array.isArray(workerData.libs)) {
+    for (const lib of workerData.libs) {
+        if (lib.module && lib.var) {
+            try {
+                loadedModules[lib.var] = require(lib.module);
+                moduleVars.push(lib.var);
+                moduleValues.push(loadedModules[lib.var]);
+            } catch (err) {
+                console.error(`[async-function] Failed to load module ${lib.module}: ${err.message}`);
+            }
+        }
+    }
+}
 
 /**
  * Handle incoming messages from main thread
@@ -53,14 +102,18 @@ if (parentPort) {
                 const restoredMsg = await serializer.restoreBuffers(msg);
                 const transferToPythonMs = hrtimeDiffToMs(restoreStart);
 
-                let userFunction = compiledCodeCache.get(code);
+                // Cache key includes code + module vars to handle different module configs
+                const cacheKey = code + '|' + moduleVars.join(',');
+                let userFunction = getCachedFunction(cacheKey);
                 if (!userFunction) {
-                    userFunction = new AsyncFunction('msg', code);
-                    compiledCodeCache.set(code, userFunction);
+                    // Create function with msg + all module variables as parameters
+                    userFunction = new AsyncFunction('msg', ...moduleVars, code);
+                    setCachedFunction(cacheKey, userFunction);
                 }
 
                 const execStart = process.hrtime.bigint();
-                const rawResult = await userFunction(restoredMsg);
+                // Execute with msg and all loaded module values
+                const rawResult = await userFunction(restoredMsg, ...moduleValues);
                 const executionMs = hrtimeDiffToMs(execStart);
 
                 // Offload buffers in the result (large Buffers -> shared memory descriptors)

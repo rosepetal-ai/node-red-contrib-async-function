@@ -260,7 +260,6 @@ class SharedMemoryManager {
      * Cleanup orphaned files from previous crashes
      */
     cleanupOrphanedFiles() {
-        const pattern = `rosepetal-async-${process.pid}-`;
         const oneHourAgo = Date.now() - (60 * 60 * 1000);
 
         try {

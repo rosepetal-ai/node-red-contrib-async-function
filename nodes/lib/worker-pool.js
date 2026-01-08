@@ -17,6 +17,8 @@ const DEFAULT_CONFIG = {
     taskTimeout: 30000,         // Default task timeout: 30s
     maxQueueSize: 100,          // Max queued messages
     shmThreshold: 0,            // Always use shared memory for Buffers
+    libs: [],                   // External modules to load in workers
+    nodeRedUserDir: null,       // Node-RED user directory for module resolution
     workerScript: path.join(__dirname, 'worker-script.js')
 };
 
@@ -76,7 +78,9 @@ class WorkerPool {
             try {
                 const worker = new Worker(this.config.workerScript, {
                     workerData: {
-                        shmThreshold: this.config.shmThreshold
+                        shmThreshold: this.config.shmThreshold,
+                        libs: this.config.libs || [],
+                        nodeRedUserDir: this.config.nodeRedUserDir
                     }
                 });
 

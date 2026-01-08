@@ -6,6 +6,7 @@
  */
 
 const { WorkerPool } = require('./lib/worker-pool');
+const { installModule, getNodeRedUserDir } = require('./lib/module-installer');
 
 function extractMsgKeysFromCode(code) {
     const keys = new Set();
@@ -186,11 +187,31 @@ module.exports = function(RED) {
         node.outputs = config.outputs || 1;
         node.timeout = config.timeout || 30000;
         node.name = config.name || '';
+        node.errorRecoveryTimer = null;  // Track error recovery timer
 
         // Migrate old config to new format (backwards compatibility)
         if (config.minWorkers !== undefined || config.maxWorkers !== undefined) {
             config.numWorkers = config.maxWorkers || config.minWorkers || 3;
             node.warn('Configuration migrated: minWorkers/maxWorkers → numWorkers=' + config.numWorkers);
+        }
+
+        // Store libs configuration
+        node.libs = config.libs || [];
+
+        // Pre-check and install missing modules
+        if (node.libs && node.libs.length > 0) {
+            for (const lib of node.libs) {
+                try {
+                    require.resolve(lib.module);
+                } catch (err) {
+                    if (err.code === 'MODULE_NOT_FOUND') {
+                        node.warn(`Installing missing module: ${lib.module}`);
+                        if (!installModule(lib.module)) {
+                            node.error(`Failed to install module: ${lib.module}. Please install it manually in ~/.node-red`);
+                        }
+                    }
+                }
+            }
         }
 
         // Create per-node worker pool
@@ -199,7 +220,9 @@ module.exports = function(RED) {
                 numWorkers: config.numWorkers || 3,
                 maxQueueSize: config.maxQueueSize || 100,
                 taskTimeout: node.timeout,
-                shmThreshold: 0
+                shmThreshold: 0,
+                libs: node.libs,
+                nodeRedUserDir: getNodeRedUserDir()
             });
         } catch (err) {
             node.error('Failed to create worker pool: ' + err.message);
@@ -267,8 +290,7 @@ module.exports = function(RED) {
 
                 send(output);
                 done();
-
-                updateStatus(node);
+                // Status updated by periodic interval (every 2s) - no per-message update needed
             } catch (err) {
                 // Handle errors
                 node.status({
@@ -283,8 +305,12 @@ module.exports = function(RED) {
                 // Propagate error to Catch node
                 done(err);
 
-                // Restore normal status after 3 seconds
-                setTimeout(() => {
+                // Restore normal status after 3 seconds (clear any existing timer first)
+                if (node.errorRecoveryTimer) {
+                    clearTimeout(node.errorRecoveryTimer);
+                }
+                node.errorRecoveryTimer = setTimeout(() => {
+                    node.errorRecoveryTimer = null;
                     updateStatus(node);
                 }, 3000);
             }
@@ -295,6 +321,12 @@ module.exports = function(RED) {
             // Clear status interval
             if (node.statusInterval) {
                 clearInterval(node.statusInterval);
+            }
+
+            // Clear error recovery timer
+            if (node.errorRecoveryTimer) {
+                clearTimeout(node.errorRecoveryTimer);
+                node.errorRecoveryTimer = null;
             }
 
             node.status({});

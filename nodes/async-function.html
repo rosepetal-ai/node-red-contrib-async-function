@@ -4,17 +4,18 @@
     RED.nodes.registerType('async-function', {
         category: 'function',
         color: '#d7d9dc',
-	        defaults: {
-	            name: { value: '' },
-	            func: {
-	                value: '// Write your async code here\n// The code runs in a worker thread\n// Available: msg, return, async/await, require()\n// Not available: context, flow, global, node\n\nreturn msg;'
-	            },
-	            outputs: { value: 1, validate: RED.validators.number() },
-	            timeout: { value: 30000, validate: RED.validators.number() },
-	            numWorkers: { value: 3, validate: RED.validators.number() },
-	            maxQueueSize: { value: 100, validate: RED.validators.number() },
-	            noerr: { value: 0 }
-	        },
+        defaults: {
+            name: { value: '' },
+            func: {
+                value: '// Write your async code here\n// The code runs in a worker thread\n// Available: msg, return, async/await, require()\n// Not available: context, flow, global, node\n\nreturn msg;'
+            },
+            outputs: { value: 1, validate: RED.validators.number() },
+            timeout: { value: 30000, validate: RED.validators.number() },
+            numWorkers: { value: 3, validate: RED.validators.number() },
+            maxQueueSize: { value: 100, validate: RED.validators.number() },
+            libs: { value: [] },
+            noerr: { value: 0 }
+        },
         inputs: 1,
         outputs: 1,
         icon: 'function.svg',
@@ -62,12 +63,39 @@
             // Activate Function tab by default
             tabs.activateTab("async-func-tab-function");
 
-            // Setup ACE editor
+            // Build extraLibs for Monaco editor (format: [{var, module}])
+            var extraLibs = (this.libs || []).map(function(lib) {
+                return { var: lib.var, module: lib.module };
+            });
+
+            // Setup editor with extraLibs for Monaco IntelliSense
             this.editor = RED.editor.createEditor({
                 id: 'node-input-func-editor',
-                mode: 'ace/mode/javascript',
-                value: $('#node-input-func').val()
+                mode: 'ace/mode/nrjavascript',
+                value: $('#node-input-func').val(),
+                globals: {
+                    msg: true,
+                    require: true,
+                    console: true,
+                    setTimeout: true,
+                    clearTimeout: true,
+                    setInterval: true,
+                    clearInterval: true,
+                    Buffer: true,
+                    process: true
+                },
+                extraLibs: extraLibs
             });
+
+            // Refresh Monaco module libs after editor is ready
+            var that = this;
+            if (extraLibs.length > 0) {
+                setTimeout(function() {
+                    if (that.editor && that.editor.nodered && that.editor.nodered.refreshModuleLibs) {
+                        that.editor.nodered.refreshModuleLibs(extraLibs);
+                    }
+                }, 200);
+            }
 
             // Setup outputs spinner
             $('#node-input-outputs').spinner({
@@ -82,9 +110,132 @@
                 step: 1000
             });
 
-	            // Setup worker pool spinners
-	            $('#node-input-numWorkers').spinner({ min: 1, max: 16 });
-	            $('#node-input-maxQueueSize').spinner({ min: 10, max: 1000, step: 10 });
+            // Setup worker pool spinners
+            $('#node-input-numWorkers').spinner({ min: 1, max: 16 });
+            $('#node-input-maxQueueSize').spinner({ min: 10, max: 1000, step: 10 });
+
+            // Setup modules editable list
+            $('#node-input-libs-container').css('min-height','120px').editableList({
+                addButton: true,
+                removable: true,
+                sortable: false,
+                header: $('<div class="async-func-libs-header"><div>Module</div><div>Import as</div></div>'),
+                addItem: function(container, i, opt) {
+                    var row = $('<div class="async-func-libs-entry"/>').appendTo(container);
+                    $('<input/>', {
+                        class: 'node-input-libs-module',
+                        type: 'text',
+                        placeholder: 'e.g. lodash'
+                    }).val(opt.module || '').appendTo(row);
+                    $('<input/>', {
+                        class: 'node-input-libs-var',
+                        type: 'text',
+                        placeholder: 'e.g. _'
+                    }).val(opt.var || '').appendTo(row);
+
+                    // Auto-generate variable name from module name
+                    row.find('.node-input-libs-module').on('change keyup', function() {
+                        var varInput = row.find('.node-input-libs-var');
+                        if (!varInput.val()) {
+                            var moduleName = $(this).val().trim();
+                            // Generate variable name: strip scope, replace dashes/dots with camelCase
+                            var varName = moduleName
+                                .replace(/^@[^/]+\//, '')  // Remove npm scope
+                                .replace(/[-_.]/g, ' ')
+                                .replace(/\s+(.)/g, function(m, c) { return c.toUpperCase(); })
+                                .replace(/\s/g, '');
+                            varInput.val(varName);
+                            varInput.trigger('change');
+                        }
+                    }).on('change', function() {
+                        // Update editor modules when module name changes
+                        if (typeof updateEditorModules === 'function') {
+                            updateEditorModules();
+                        }
+                    });
+
+                    // Validate variable name is a valid JS identifier and update editor
+                    row.find('.node-input-libs-var').on('change keyup', function() {
+                        var val = $(this).val().trim();
+                        var isValid = /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(val);
+                        var reserved = ['msg', 'require', 'console', 'setTimeout', 'setInterval',
+                                       'clearTimeout', 'clearInterval', 'Buffer', 'process'];
+                        if (reserved.indexOf(val) !== -1) {
+                            isValid = false;
+                        }
+                        if (val && !isValid) {
+                            $(this).addClass('input-error');
+                        } else {
+                            $(this).removeClass('input-error');
+                        }
+                    }).on('change', function() {
+                        // Update editor modules when variable name changes
+                        if (typeof updateEditorModules === 'function') {
+                            updateEditorModules();
+                        }
+                    });
+                }
+            });
+
+            // Populate existing libs
+            if (this.libs && this.libs.length > 0) {
+                var libsList = this.libs;
+                for (var i = 0; i < libsList.length; i++) {
+                    $('#node-input-libs-container').editableList('addItem', libsList[i]);
+                }
+            }
+
+            // Get current libs list from editableList
+            function getLibsList() {
+                var libs = [];
+                $('#node-input-libs-container').editableList('items').each(function() {
+                    var moduleName = $(this).find('.node-input-libs-module').val().trim();
+                    var varName = $(this).find('.node-input-libs-var').val().trim();
+                    if (moduleName && varName) {
+                        libs.push({ var: varName, module: moduleName });
+                    }
+                });
+                return libs;
+            }
+
+            // Update editor when modules change (supports both Monaco and ACE)
+            function updateEditorModules() {
+                if (node.editor) {
+                    var libs = getLibsList();
+
+                    // For Monaco editor: use refreshModuleLibs
+                    if (node.editor.nodered && node.editor.nodered.refreshModuleLibs) {
+                        node.editor.nodered.refreshModuleLibs(libs);
+                    }
+
+                    // For ACE editor: update globals
+                    if (node.editor.session && node.editor.session.$worker) {
+                        var globals = {
+                            msg: true,
+                            require: true,
+                            console: true,
+                            setTimeout: true,
+                            clearTimeout: true,
+                            setInterval: true,
+                            clearInterval: true,
+                            Buffer: true,
+                            process: true
+                        };
+                        libs.forEach(function(lib) {
+                            if (lib.var) {
+                                globals[lib.var] = true;
+                            }
+                        });
+                        node.editor.session.$worker.send("setOptions", [{
+                            globals: globals,
+                            maxerr: 1000
+                        }]);
+                    }
+                }
+            }
+
+            // Hook into editableList add/remove events and variable name changes
+            $('#node-input-libs-container').on('editablelistitemadd editablelistitemremove', updateEditorModules);
 
             // Resize editor on dialog resize
             $('#dialog-form').on('dialogresize', function() {
@@ -117,6 +268,17 @@
             $('#node-input-func').val(this.editor.getValue());
             this.editor.destroy();
             delete this.editor;
+
+            // Save libs
+            var libs = [];
+            $('#node-input-libs-container').editableList('items').each(function() {
+                var module = $(this).find('.node-input-libs-module').val().trim();
+                var varName = $(this).find('.node-input-libs-var').val().trim();
+                if (module && varName) {
+                    libs.push({ module: module, var: varName });
+                }
+            });
+            this.libs = libs;
         },
         oneditcancel: function() {
             this.editor.destroy();
@@ -160,6 +322,63 @@
         .async-func-tabs-row {
             margin-bottom: 0;
         }
+        .async-func-section {
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            padding: 10px 15px;
+            margin-bottom: 15px;
+            background: #fafafa;
+        }
+        .async-func-section-header {
+            font-weight: 500;
+            margin-bottom: 10px;
+            color: #333;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 5px;
+        }
+        .async-func-section .form-row {
+            margin-bottom: 8px;
+        }
+        .async-func-section .form-row:last-child {
+            margin-bottom: 0;
+        }
+        /* Modules editableList styles */
+        #node-input-libs-container {
+            min-height: 120px;
+        }
+        #node-input-libs-container .red-ui-editableList-header,
+        .async-func-libs-header {
+            display: flex;
+            gap: 10px;
+            padding: 6px 8px;
+            font-weight: 500;
+            color: #666;
+            background: var(--red-ui-tertiary-background, #f7f7f7);
+            border-bottom: 1px solid #ddd;
+            padding-right: 35px; /* Space for delete button column */
+        }
+        #node-input-libs-container .red-ui-editableList-header > div,
+        .async-func-libs-header > div {
+            flex: 1;
+        }
+        #node-input-libs-container .red-ui-editableList-container {
+            padding: 0;
+        }
+        #node-input-libs-container .red-ui-editableList-item-content {
+            padding: 4px 0;
+        }
+        .async-func-libs-entry {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+        }
+        .async-func-libs-entry input {
+            flex: 1;
+        }
+        .async-func-libs-entry input.input-error {
+            border-color: #d9534f;
+            background-color: #fff5f5;
+        }
     </style>
 
     <div class="form-row">
@@ -177,34 +396,49 @@
 
         <!-- Setup Tab -->
         <div id="async-func-tab-setup" style="display:none">
-            <div class="form-row">
-                <label for="node-input-outputs"><i class="fa fa-random"></i> Outputs</label>
-                <input id="node-input-outputs" style="width:60px;" value="1">
+            <!-- Behavior Section -->
+            <div class="async-func-section">
+                <div class="async-func-section-header">
+                    <i class="fa fa-sliders"></i> Behavior
+                </div>
+                <div class="form-row">
+                    <label for="node-input-outputs"><i class="fa fa-random"></i> Outputs</label>
+                    <input id="node-input-outputs" style="width:60px;" value="1">
+                </div>
+                <div class="form-row">
+                    <label for="node-input-timeout"><i class="fa fa-clock-o"></i> Timeout</label>
+                    <input id="node-input-timeout" style="width:120px;" value="30000">
+                    <span style="margin-left:5px;">ms</span>
+                </div>
             </div>
 
-            <div class="form-row">
-                <label for="node-input-timeout"><i class="fa fa-clock-o"></i> Timeout</label>
-                <input id="node-input-timeout" style="width:120px;" value="30000">
-                <span style="margin-left:5px;">ms</span>
+            <!-- Worker Pool Section -->
+            <div class="async-func-section">
+                <div class="async-func-section-header">
+                    <i class="fa fa-cogs"></i> Worker Pool
+                </div>
+                <div class="form-row">
+                    <label for="node-input-numWorkers">Workers</label>
+                    <input type="number" id="node-input-numWorkers" style="width: 80px;" min="1" max="16" value="3">
+                    <span style="margin-left: 10px; color: #999;">Fixed worker count (1-16)</span>
+                </div>
+                <div class="form-row">
+                    <label for="node-input-maxQueueSize">Queue Size</label>
+                    <input type="number" id="node-input-maxQueueSize" style="width: 80px;" min="10" max="1000" step="10" value="100">
+                    <span style="margin-left: 10px; color: #999;">Max queued messages</span>
+                </div>
             </div>
 
-            <div class="form-row">
-                <label><i class="fa fa-cogs"></i> Worker Pool</label>
+            <!-- Modules Section -->
+            <div class="async-func-section">
+                <div class="async-func-section-header">
+                    <i class="fa fa-cubes"></i> Modules
+                </div>
+                <div class="form-row" style="margin-bottom: 0;">
+                    <ol id="node-input-libs-container"></ol>
+                </div>
             </div>
-
-            <div class="form-row" style="padding-left: 20px;">
-                <label for="node-input-numWorkers" style="width: auto;">Workers</label>
-                <input type="number" id="node-input-numWorkers" style="width: 80px;" min="1" max="16" value="3">
-                <span style="margin-left: 10px; color: #999;">Fixed worker count</span>
-            </div>
-
-            <div class="form-row" style="padding-left: 20px;">
-                <label for="node-input-maxQueueSize" style="width: auto;">Queue Size</label>
-                <input type="number" id="node-input-maxQueueSize" style="width: 80px;" min="10" max="1000" step="10" value="100">
-                <span style="margin-left: 10px; color: #999;">Max queued messages</span>
-            </div>
-
-	        </div>
+        </div>
 
         <!-- Function Tab -->
         <div id="async-func-tab-function" style="display:none">
@@ -312,19 +546,19 @@ for (let i = 2; i <= limit; i++) {
 msg.payload = primes;
 return msg;</pre>
 
-	    <h3>Configuration</h3>
-	    <dl class="message-properties">
-	        <dt>Outputs</dt>
-	        <dd>Number of output ports (0-10). Use array return for multiple outputs.</dd>
-	        <dt>Timeout</dt>
-	        <dd>Maximum execution time in milliseconds (1000-300000). Worker is terminated if exceeded. Default: 30000 (30s).</dd>
-	        <dt>Workers</dt>
-	        <dd>Fixed number of worker threads (1-16). Each node maintains exactly this many workers. Default: 3.</dd>
-	        <dt>Queue Size</dt>
-	        <dd>Maximum number of messages queued when all workers are busy (10-1000). Default: 100.</dd>
-	        <dt>Buffers</dt>
-	        <dd>All Buffers are transferred via shared memory when possible (falls back to base64 if needed).</dd>
-	    </dl>
+    <h3>Configuration</h3>
+    <dl class="message-properties">
+        <dt>Outputs</dt>
+        <dd>Number of output ports (0-10). Use array return for multiple outputs.</dd>
+        <dt>Timeout</dt>
+        <dd>Maximum execution time in milliseconds (1000-300000). Worker is terminated if exceeded. Default: 30000 (30s).</dd>
+        <dt>Workers</dt>
+        <dd>Fixed number of worker threads (1-16). Each node maintains exactly this many workers. Default: 3.</dd>
+        <dt>Queue Size</dt>
+        <dd>Maximum number of messages queued when all workers are busy (10-1000). Default: 100.</dd>
+        <dt>Buffers</dt>
+        <dd>All Buffers are transferred via shared memory when possible (falls back to base64 if needed).</dd>
+    </dl>
 
     <h3>Status Display</h3>
     <p>The node status shows real-time worker pool statistics:</p>
@@ -344,17 +578,17 @@ return msg;</pre>
     throw new Error('Payload is required');
 }</pre>
 
-	    <h3>Performance Notes</h3>
-	    <ul>
-	        <li>Worker threads add ~5-10ms overhead per message</li>
-	        <li>Best for CPU-intensive operations (>10ms execution time)</li>
-	        <li>For simple operations, use the standard function node</li>
-	        <li>Workers are pooled and reused for efficiency</li>
-	        <li><b>Buffer Transfer:</b> Buffers are streamed through shared memory (base64 fallback)</li>
-	        <li>Event loop never blocks, even when processing multi-MB binary data (images, files, etc.)</li>
-	        <li>Message transfer is optimized by copying only referenced <code>msg.*</code> keys when possible</li>
-	        <li>Timing is recorded on <code>msg.performance</code> under the node label</li>
-	    </ul>
+    <h3>Performance Notes</h3>
+    <ul>
+        <li>Worker threads add ~5-10ms overhead per message</li>
+        <li>Best for CPU-intensive operations (>10ms execution time)</li>
+        <li>For simple operations, use the standard function node</li>
+        <li>Workers are pooled and reused for efficiency</li>
+        <li><b>Buffer Transfer:</b> Buffers are streamed through shared memory (base64 fallback)</li>
+        <li>Event loop never blocks, even when processing multi-MB binary data (images, files, etc.)</li>
+        <li>Message transfer is optimized by copying only referenced <code>msg.*</code> keys when possible</li>
+        <li>Timing is recorded on <code>msg.performance</code> under the node label</li>
+    </ul>
 
     <h3>References</h3>
     <ul>
