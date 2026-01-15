@@ -107,6 +107,14 @@ class WorkerPool {
                         clearTimeout(readyTimeout);
                         workerState.state = WorkerState.IDLE;
                         this.workers.push(workerState);
+
+                        // Log module loading failures so users can diagnose issues
+                        if (msg.failedModules && msg.failedModules.length > 0) {
+                            for (const failed of msg.failedModules) {
+                                console.warn(`[async-function] Worker failed to load module "${failed.module}" (${failed.var}): ${failed.error}`);
+                            }
+                        }
+
                         resolve(workerState);
                     }
                 });
