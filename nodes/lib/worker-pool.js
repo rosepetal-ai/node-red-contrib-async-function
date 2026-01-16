@@ -59,13 +59,25 @@ class WorkerPool {
             return;
         }
 
-        // Create exactly numWorkers workers
-        const promises = [];
-        for (let i = 0; i < this.config.numWorkers; i++) {
-            promises.push(this.createWorker());
+        // Check if external modules are configured (may include native modules)
+        const hasExternalModules = this.config.libs && this.config.libs.length > 0;
+
+        if (hasExternalModules) {
+            // Initialize workers SEQUENTIALLY to avoid race conditions with native modules.
+            // Native modules register once per process - parallel initialization can cause
+            // "Module did not self-register" errors if multiple workers try to load simultaneously.
+            for (let i = 0; i < this.config.numWorkers; i++) {
+                await this.createWorker();
+            }
+        } else {
+            // No external modules - safe to initialize in parallel (faster startup)
+            const promises = [];
+            for (let i = 0; i < this.config.numWorkers; i++) {
+                promises.push(this.createWorker());
+            }
+            await Promise.all(promises);
         }
 
-        await Promise.all(promises);
         this.initialized = true;
     }
 
