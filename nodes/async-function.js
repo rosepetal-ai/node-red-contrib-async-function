@@ -219,19 +219,30 @@ module.exports = function(RED) {
         }
 
         const nodeRedUserDir = resolveNodeRedUserDir(RED);
-        const moduleLoadPromises = [];
 
+        // Verify modules are resolvable WITHOUT loading them in the main thread.
+        // Loading native modules (like 'gl') in main thread prevents them from
+        // working in worker threads due to native module registration conflicts.
         if (node.libs.length > 0) {
+            const { createRequire } = require('module');
+            const nodeRedRequire = createRequire(path.join(nodeRedUserDir, 'package.json'));
+
             for (const lib of node.libs) {
                 if (!lib || !lib.module || !lib.var) {
                     continue;
                 }
-                moduleLoadPromises.push(
-                    RED.import(lib.module).catch((err) => {
-                        node.error(`Failed to load module "${lib.module}": ${err.message}`);
-                        throw err;
-                    })
-                );
+                try {
+                    // Only resolve the path - don't actually load the module
+                    nodeRedRequire.resolve(lib.module);
+                } catch (err) {
+                    node.error(`Module "${lib.module}" not found. Install it with: cd ${nodeRedUserDir} && npm install ${lib.module}`);
+                    node.status({
+                        fill: 'red',
+                        shape: 'dot',
+                        text: `Module not found: ${lib.module}`
+                    });
+                    return;
+                }
             }
         }
 
@@ -271,13 +282,8 @@ module.exports = function(RED) {
             });
         };
 
-        Promise.all(moduleLoadPromises).then(startPool).catch(() => {
-            node.status({
-                fill: 'red',
-                shape: 'dot',
-                text: 'Module load failed'
-            });
-        });
+        // Start the pool directly - module validation already done synchronously above
+        startPool();
 
         // Handle incoming messages
         node.on('input', async function(msg, send, done) {
