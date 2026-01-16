@@ -239,6 +239,32 @@
             // Ensure configured module vars are registered in the editor on load
             updateEditorModules();
 
+            // Restart Workers button click handler
+            $('#node-restart-workers').on('click', function() {
+                var btn = $(this);
+                var status = $('#node-restart-status');
+                var nodeId = node.id;
+
+                btn.prop('disabled', true);
+                status.text('Restarting...').css('color', '#666');
+
+                $.ajax({
+                    url: 'async-function/' + nodeId + '/restart',
+                    type: 'POST',
+                    success: function(data) {
+                        status.text('✓ Workers restarted').css('color', 'green');
+                        setTimeout(function() { status.text(''); }, 3000);
+                    },
+                    error: function(xhr) {
+                        var msg = xhr.responseJSON ? xhr.responseJSON.error : 'Restart failed';
+                        status.text('✗ ' + msg).css('color', 'red');
+                    },
+                    complete: function() {
+                        btn.prop('disabled', false);
+                    }
+                });
+            });
+
             // Resize editor on dialog resize
             $('#dialog-form').on('dialogresize', function() {
                 const rows = $('#dialog-form>div:not(#async-func-tabs-content)');
@@ -438,6 +464,22 @@
                 </div>
                 <div class="form-row" style="margin-bottom: 0;">
                     <ol id="node-input-libs-container"></ol>
+                </div>
+            </div>
+
+            <!-- Actions Section -->
+            <div class="async-func-section">
+                <div class="async-func-section-header">
+                    <i class="fa fa-refresh"></i> Actions
+                </div>
+                <div class="form-row" style="margin-bottom: 0;">
+                    <button type="button" class="red-ui-button" id="node-restart-workers">
+                        <i class="fa fa-refresh"></i> Restart Workers
+                    </button>
+                    <span id="node-restart-status" style="margin-left: 10px;"></span>
+                    <div style="margin-top: 8px; color: #999; font-size: 12px;">
+                        Restarts all worker threads to reload modules and reset state.
+                    </div>
                 </div>
             </div>
         </div>

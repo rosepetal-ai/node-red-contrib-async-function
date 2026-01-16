@@ -348,4 +348,23 @@ module.exports = function(RED) {
 
     // Register the node type
     RED.nodes.registerType('async-function', AsyncFunctionNode);
+
+    // HTTP endpoint to restart workers for a specific node
+    RED.httpAdmin.post('/async-function/:id/restart', async function(req, res) {
+        const node = RED.nodes.getNode(req.params.id);
+        if (!node || !node.pool) {
+            return res.status(404).json({ error: 'Node not found or pool not initialized' });
+        }
+
+        try {
+            await node.pool.shutdown();
+            node.pool.initialized = false;
+            node.pool.shuttingDown = false;
+            await node.pool.initialize();
+            updateStatus(node);
+            res.json({ success: true, message: 'Workers restarted' });
+        } catch (err) {
+            res.status(500).json({ error: err.message });
+        }
+    });
 };
