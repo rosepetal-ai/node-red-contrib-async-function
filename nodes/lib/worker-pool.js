@@ -105,16 +105,20 @@ class WorkerPool {
                 worker.on('message', (msg) => {
                     if (msg.type === 'ready') {
                         clearTimeout(readyTimeout);
-                        workerState.state = WorkerState.IDLE;
-                        this.workers.push(workerState);
-
-                        // Log module loading failures so users can diagnose issues
                         if (msg.failedModules && msg.failedModules.length > 0) {
-                            for (const failed of msg.failedModules) {
-                                console.warn(`[async-function] Worker failed to load module "${failed.module}" (${failed.var}): ${failed.error}`);
-                            }
+                            const detail = msg.failedModules
+                                .map((failed) => `${failed.module} (${failed.var}): ${failed.error}`)
+                                .join('; ');
+                            const err = new Error(`Worker failed to load module(s): ${detail}`);
+                            err.failedModules = msg.failedModules;
+                            worker.terminate().finally(() => {
+                                reject(err);
+                            });
+                            return;
                         }
 
+                        workerState.state = WorkerState.IDLE;
+                        this.workers.push(workerState);
                         resolve(workerState);
                     }
                 });

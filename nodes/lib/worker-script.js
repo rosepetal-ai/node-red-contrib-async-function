@@ -8,6 +8,9 @@
 
 const { parentPort, workerData } = require('worker_threads');
 const { AsyncLocalStorage } = require('async_hooks');
+const { createRequire, builtinModules } = require('module');
+const path = require('path');
+const url = require('url');
 const { SharedMemoryManager } = require('./shared-memory-manager');
 const { AsyncMessageSerializer } = require('./message-serializer');
 
@@ -65,26 +68,56 @@ const moduleVars = [];
 const moduleValues = [];
 const failedModules = [];  // Track modules that failed to load
 
-// Add Node-RED user directory to module search path for external modules
-if (workerData && workerData.nodeRedUserDir) {
-    const path = require('path');
-    const nodeModulesPath = path.join(workerData.nodeRedUserDir, 'node_modules');
-    if (!module.paths.includes(nodeModulesPath)) {
-        module.paths.unshift(nodeModulesPath);
+const baseRequire = (() => {
+    if (workerData && workerData.nodeRedUserDir) {
+        return createRequire(path.join(workerData.nodeRedUserDir, 'package.json'));
     }
+    return require;
+})();
+
+global.require = baseRequire;
+
+function parseModuleSpec(spec) {
+    const match = /((?:@[^/]+\/)?[^/@]+)(\/[^/@]+)?(?:@([\s\S]+))?/.exec(spec);
+    if (!match) {
+        return { spec, module: spec, subpath: '', builtin: false };
+    }
+    const moduleName = match[1];
+    const subpath = match[2] || '';
+    let builtinName = moduleName;
+    if (builtinName.startsWith('node:')) {
+        builtinName = builtinName.slice(5);
+    }
+    const builtin = builtinModules.includes(builtinName);
+    return { spec, module: moduleName, subpath, builtin };
 }
 
-if (workerData && workerData.libs && Array.isArray(workerData.libs)) {
+async function loadModule(spec) {
+    const parsed = parseModuleSpec(spec);
+    if (parsed.builtin) {
+        return baseRequire(parsed.module + parsed.subpath);
+    }
+    const resolvedPath = baseRequire.resolve(spec);
+    const moduleUrl = url.pathToFileURL(resolvedPath);
+    const imported = await import(moduleUrl);
+    return imported.default || imported;
+}
+
+async function loadConfiguredModules() {
+    if (!workerData || !Array.isArray(workerData.libs)) {
+        return;
+    }
     for (const lib of workerData.libs) {
-        if (lib.module && lib.var) {
-            try {
-                loadedModules[lib.var] = require(lib.module);
-                moduleVars.push(lib.var);
-                moduleValues.push(loadedModules[lib.var]);
-            } catch (err) {
-                console.error(`[async-function] Failed to load module ${lib.module}: ${err.message}`);
-                failedModules.push({ module: lib.module, var: lib.var, error: err.message });
-            }
+        if (!lib || !lib.module || !lib.var) {
+            continue;
+        }
+        try {
+            loadedModules[lib.var] = await loadModule(lib.module);
+            moduleVars.push(lib.var);
+            moduleValues.push(loadedModules[lib.var]);
+        } catch (err) {
+            console.error(`[async-function] Failed to load module ${lib.module}: ${err.message}`);
+            failedModules.push({ module: lib.module, var: lib.var, error: err.message });
         }
     }
 }
@@ -92,7 +125,13 @@ if (workerData && workerData.libs && Array.isArray(workerData.libs)) {
 /**
  * Handle incoming messages from main thread
  */
-if (parentPort) {
+async function initializeWorker() {
+    await loadConfiguredModules();
+
+    if (!parentPort) {
+        return;
+    }
+
     parentPort.on('message', async (data) => {
         // Ignore messages if terminating
         if (isTerminating) {
@@ -205,3 +244,12 @@ if (parentPort) {
         failedModules: failedModules.length > 0 ? failedModules : undefined
     });
 }
+
+initializeWorker().catch((err) => {
+    if (parentPort) {
+        parentPort.postMessage({
+            type: 'ready',
+            failedModules: [{ module: '(init)', var: null, error: err.message }]
+        });
+    }
+});

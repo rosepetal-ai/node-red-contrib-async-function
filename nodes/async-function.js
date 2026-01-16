@@ -5,8 +5,18 @@
  * to prevent event loop blocking.
  */
 
+const path = require('path');
 const { WorkerPool } = require('./lib/worker-pool');
-const { installModule, getNodeRedUserDir } = require('./lib/module-installer');
+
+function resolveNodeRedUserDir(RED) {
+    if (RED && RED.settings && RED.settings.userDir) {
+        return path.resolve(RED.settings.userDir);
+    }
+    if (process.env.NODE_RED_HOME) {
+        return path.resolve(process.env.NODE_RED_HOME);
+    }
+    return process.cwd();
+}
 
 function extractMsgKeysFromCode(code) {
     const keys = new Set();
@@ -196,57 +206,76 @@ module.exports = function(RED) {
         }
 
         // Store libs configuration
-        node.libs = config.libs || [];
+        node.libs = Array.isArray(config.libs) ? config.libs : [];
 
-        // Pre-check and install missing modules
-        if (node.libs && node.libs.length > 0) {
-            for (const lib of node.libs) {
-                try {
-                    require.resolve(lib.module);
-                } catch (err) {
-                    if (err.code === 'MODULE_NOT_FOUND') {
-                        node.warn(`Installing missing module: ${lib.module}`);
-                        if (!installModule(lib.module)) {
-                            node.error(`Failed to install module: ${lib.module}. Please install it manually in ~/.node-red`);
-                        }
-                    }
-                }
-            }
-        }
-
-        // Create per-node worker pool
-        try {
-            node.pool = new WorkerPool({
-                numWorkers: config.numWorkers || 3,
-                maxQueueSize: config.maxQueueSize || 100,
-                taskTimeout: node.timeout,
-                shmThreshold: 0,
-                libs: node.libs,
-                nodeRedUserDir: getNodeRedUserDir()
-            });
-        } catch (err) {
-            node.error('Failed to create worker pool: ' + err.message);
+        if (RED.settings.functionExternalModules === false && node.libs.length > 0) {
+            node.error('External modules are disabled by Node-RED settings.');
             node.status({
                 fill: 'red',
                 shape: 'dot',
-                text: 'Pool creation failed'
+                text: 'Modules disabled'
             });
             return;
         }
 
-        // Initialize pool
-        node.pool.initialize().then(() => {
-            updateStatus(node);
-            // Start periodic status updates
-            node.statusInterval = setInterval(() => {
+        const nodeRedUserDir = resolveNodeRedUserDir(RED);
+        const moduleLoadPromises = [];
+
+        if (node.libs.length > 0) {
+            for (const lib of node.libs) {
+                if (!lib || !lib.module || !lib.var) {
+                    continue;
+                }
+                moduleLoadPromises.push(
+                    RED.import(lib.module).catch((err) => {
+                        node.error(`Failed to load module "${lib.module}": ${err.message}`);
+                        throw err;
+                    })
+                );
+            }
+        }
+
+        const startPool = () => {
+            try {
+                node.pool = new WorkerPool({
+                    numWorkers: config.numWorkers || 3,
+                    maxQueueSize: config.maxQueueSize || 100,
+                    taskTimeout: node.timeout,
+                    shmThreshold: 0,
+                    libs: node.libs,
+                    nodeRedUserDir
+                });
+            } catch (err) {
+                node.error('Failed to create worker pool: ' + err.message);
+                node.status({
+                    fill: 'red',
+                    shape: 'dot',
+                    text: 'Pool creation failed'
+                });
+                return;
+            }
+
+            node.pool.initialize().then(() => {
                 updateStatus(node);
-            }, 2000);  // Update every 2 seconds
-        }).catch(err => {
-            node.error('Failed to initialize worker pool: ' + err.message);
+                // Start periodic status updates
+                node.statusInterval = setInterval(() => {
+                    updateStatus(node);
+                }, 2000);  // Update every 2 seconds
+            }).catch(err => {
+                node.error('Failed to initialize worker pool: ' + err.message);
+                node.status({
+                    fill: 'red',
+                    shape: 'dot',
+                    text: 'Init failed'
+                });
+            });
+        };
+
+        Promise.all(moduleLoadPromises).then(startPool).catch(() => {
             node.status({
                 fill: 'red',
                 shape: 'dot',
-                text: 'Init failed'
+                text: 'Module load failed'
             });
         });
 
@@ -259,6 +288,11 @@ module.exports = function(RED) {
                     node.error(err, msg);
                 }
             };
+
+            if (!node.pool) {
+                done(new Error('Worker pool is not initialized'));
+                return;
+            }
 
             const timing = { start: process.hrtime.bigint() };
             const workerMsg = buildWorkerInputMsg(msg, node.func);
@@ -347,7 +381,9 @@ module.exports = function(RED) {
     }
 
     // Register the node type
-    RED.nodes.registerType('async-function', AsyncFunctionNode);
+    RED.nodes.registerType('async-function', AsyncFunctionNode, {
+        dynamicModuleList: 'libs'
+    });
 
     // HTTP endpoint to restart workers for a specific node
     RED.httpAdmin.post('/async-function/:id/restart', async function(req, res) {
