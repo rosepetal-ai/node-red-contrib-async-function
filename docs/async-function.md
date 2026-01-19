@@ -2,9 +2,9 @@
 
 ## Purpose & Use Cases
 
-The Async Function node executes JavaScript code in isolated worker threads, preventing CPU-intensive operations from blocking the Node-RED event loop. Unlike the standard Function node which runs synchronously on the main thread, this node offloads execution to a pool of worker threads, keeping your Node-RED instance responsive even during heavy computations.
+The Async Function node executes JavaScript code in isolated worker threads by default (or child processes when configured), preventing CPU-intensive operations from blocking the Node-RED event loop. Unlike the standard Function node which runs synchronously on the main thread, this node offloads execution to a pool of workers, keeping your Node-RED instance responsive even during heavy computations.
 
-This node is ideal for operations that would otherwise cause Node-RED to become unresponsive: cryptographic operations, prime number calculations, large dataset transformations, image/file processing, and any computation that takes more than 10-20ms to complete. For simple operations like basic math or property transformations, continue using the standard Function node to avoid the ~5-10ms overhead of worker thread communication.
+This node is ideal for operations that would otherwise cause Node-RED to become unresponsive: cryptographic operations, prime number calculations, large dataset transformations, image/file processing, and any computation that takes more than 10-20ms to complete. For simple operations like basic math or property transformations, continue using the standard Function node to avoid the ~5-10ms overhead of worker communication (child process mode is higher).
 
 **Real-World Applications:**
 
@@ -21,7 +21,7 @@ This node is ideal for operations that would otherwise cause Node-RED to become 
 
 ### Inputs
 
-The node accepts any standard Node-RED message object. The `msg` object is serialized and sent to the worker thread for processing.
+The node accepts any standard Node-RED message object. The `msg` object is serialized and sent to the worker for processing.
 
 **Supported input types:**
 - **Primitives**: strings, numbers, booleans, null
@@ -95,12 +95,17 @@ return [[msg1, msg2, msg3]];  // Three messages to output 1
 - **Default**: 30,000 ms (30 seconds)
 - **Behavior**: Maximum execution time for user code. If exceeded, the worker is terminated and an error is thrown. The timeout starts after message serialization completes.
 
+#### Runtime
+- **Options**: `worker_threads`, `child_process`
+- **Default**: `worker_threads`
+- **Behavior**: Worker threads are fastest. Use child processes for native modules that require the main thread (e.g., `gl`), with higher overhead.
+
 ### Worker Pool Settings
 
 #### Workers
 - **Range**: 1-16
 - **Default**: 3
-- **Behavior**: Fixed number of worker threads maintained by this node. Each async-function node maintains its own independent pool. More workers allow more parallel executions but consume more memory (~10-20MB per worker).
+- **Behavior**: Fixed number of workers maintained by this node. Each async-function node maintains its own independent pool. More workers allow more parallel executions but consume more memory (~10-20MB per worker).
 
 **Guidance:**
 - 1-2 workers: Low-volume flows or memory-constrained environments
@@ -206,11 +211,13 @@ Each message incurs approximately **5-10ms overhead** for:
 - Worker context setup
 - Result deserialization back to main thread
 
+**Note:** Child process runtime has higher overhead due to full process IPC and larger memory footprint.
+
 **Recommendation:** Only use the async-function node when your code execution time exceeds 10-20ms. For simple operations, the standard function node is more efficient.
 
 ### Native Backend Subsystem
 
-The node uses Node.js worker_threads module with additional optimizations:
+The node uses Node.js worker_threads module by default, with additional optimizations:
 
 - **Code Caching**: User code is compiled once per unique code string and cached (LRU cache with 100 entry limit). Subsequent executions reuse the compiled AsyncFunction.
 - **Message Optimization**: Only `msg.*` properties referenced in your code are serialized and sent to workers.

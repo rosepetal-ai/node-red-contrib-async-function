@@ -7,10 +7,11 @@
         defaults: {
             name: { value: '' },
             func: {
-                value: '// Write your async code here\n// The code runs in a worker thread\n// Available: msg, return, async/await, require()\n// Not available: context, flow, global, node\n\nreturn msg;'
+                value: '// Write your async code here\n// The code runs in a worker thread or child process\n// Available: msg, return, async/await, require()\n// Not available: context, flow, global, node\n\nreturn msg;'
             },
             outputs: { value: 1, validate: RED.validators.number() },
             timeout: { value: 30000, validate: RED.validators.number() },
+            executionMode: { value: 'worker_threads' },
             numWorkers: { value: 3, validate: RED.validators.number() },
             maxQueueSize: { value: 100, validate: RED.validators.number() },
             libs: { value: [] },
@@ -438,6 +439,13 @@
                     <input id="node-input-timeout" style="width:120px;" value="30000">
                     <span style="margin-left:5px;">ms</span>
                 </div>
+                <div class="form-row">
+                    <label for="node-input-executionMode"><i class="fa fa-bolt"></i> Runtime</label>
+                    <select id="node-input-executionMode" style="width: 260px;">
+                        <option value="worker_threads">Worker Threads (fastest)</option>
+                        <option value="child_process">Child Process (native modules)</option>
+                    </select>
+                </div>
             </div>
 
             <!-- Worker Pool Section -->
@@ -478,7 +486,7 @@
                     </button>
                     <span id="node-restart-status" style="margin-left: 10px;"></span>
                     <div style="margin-top: 8px; color: #999; font-size: 12px;">
-                        Restarts all worker threads to reload modules and reset state.
+                        Restarts all worker processes/threads to reload modules and reset state.
                     </div>
                 </div>
             </div>
@@ -498,12 +506,13 @@
             <div class="form-tips">
                 <b>Tips:</b>
                 <ul style="margin-top:5px; margin-bottom:0;">
-                    <li>Code runs in a worker thread to prevent blocking</li>
-                    <li>Available: <code>msg</code>, <code>return</code>, <code>async/await</code>, <code>require()</code></li>
-                    <li>Not available: <code>context</code>, <code>flow</code>, <code>global</code>, <code>node</code></li>
-                    <li>Return <code>msg</code> for single output, or <code>[msg1, msg2]</code> for multiple outputs</li>
-                    <li>Return <code>null</code> to stop the flow</li>
-                </ul>
+                <li>Code runs in a worker thread or child process to prevent blocking</li>
+                <li>Available: <code>msg</code>, <code>return</code>, <code>async/await</code>, <code>require()</code></li>
+                <li>Not available: <code>context</code>, <code>flow</code>, <code>global</code>, <code>node</code></li>
+                <li>Use "Child Process" runtime for native modules that require main thread (e.g., <code>gl</code>)</li>
+                <li>Return <code>msg</code> for single output, or <code>[msg1, msg2]</code> for multiple outputs</li>
+                <li>Return <code>null</code> to stop the flow</li>
+            </ul>
             </div>
         </div>
 
@@ -511,7 +520,7 @@
 </script>
 
 <script type="text/html" data-help-name="async-function">
-    <p>Execute custom JavaScript code in a worker thread to prevent event loop blocking.</p>
+    <p>Execute custom JavaScript code in a worker thread or child process to prevent event loop blocking.</p>
 
     <h3>Inputs</h3>
     <dl class="message-properties">
@@ -528,8 +537,8 @@
     </dl>
 
     <h3>Details</h3>
-    <p>This node executes JavaScript code in a worker thread, preventing CPU-intensive operations
-    from blocking the Node-RED event loop.</p>
+    <p>This node executes JavaScript code in a worker thread or child process, preventing CPU-intensive
+    operations from blocking the Node-RED event loop.</p>
 
     <h4>Available in Code</h4>
     <ul>
@@ -596,8 +605,10 @@ return msg;</pre>
         <dd>Number of output ports (0-10). Use array return for multiple outputs.</dd>
         <dt>Timeout</dt>
         <dd>Maximum execution time in milliseconds (1000-300000). Worker is terminated if exceeded. Default: 30000 (30s).</dd>
+        <dt>Runtime</dt>
+        <dd>Worker Threads (default, fastest) or Child Process (useful for native modules like <code>gl</code>).</dd>
         <dt>Workers</dt>
-        <dd>Fixed number of worker threads (1-16). Each node maintains exactly this many workers. Default: 3.</dd>
+        <dd>Fixed number of workers (1-16). Each node maintains exactly this many workers. Default: 3.</dd>
         <dt>Queue Size</dt>
         <dd>Maximum number of messages queued when all workers are busy (10-1000). Default: 100.</dd>
         <dt>Buffers</dt>
@@ -624,7 +635,7 @@ return msg;</pre>
 
     <h3>Performance Notes</h3>
     <ul>
-        <li>Worker threads add ~5-10ms overhead per message</li>
+        <li>Worker threads add ~5-10ms overhead per message (child process mode is higher)</li>
         <li>Best for CPU-intensive operations (>10ms execution time)</li>
         <li>For simple operations, use the standard function node</li>
         <li>Workers are pooled and reused for efficiency</li>

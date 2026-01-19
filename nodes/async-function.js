@@ -7,6 +7,7 @@
 
 const path = require('path');
 const { WorkerPool } = require('./lib/worker-pool');
+const { ChildProcessPool } = require('./lib/child-process-pool');
 
 function resolveNodeRedUserDir(RED) {
     if (RED && RED.settings && RED.settings.userDir) {
@@ -198,6 +199,8 @@ module.exports = function(RED) {
         node.timeout = config.timeout || 30000;
         node.name = config.name || '';
         node.errorRecoveryTimer = null;  // Track error recovery timer
+        const modeValue = typeof config.executionMode === 'string' ? config.executionMode.trim() : '';
+        node.executionMode = modeValue.toLowerCase() === 'child_process' ? 'child_process' : 'worker_threads';
 
         // Migrate old config to new format (backwards compatibility)
         if (config.minWorkers !== undefined || config.maxWorkers !== undefined) {
@@ -248,7 +251,8 @@ module.exports = function(RED) {
 
         const startPool = () => {
             try {
-                node.pool = new WorkerPool({
+                const PoolImpl = node.executionMode === 'child_process' ? ChildProcessPool : WorkerPool;
+                node.pool = new PoolImpl({
                     numWorkers: config.numWorkers || 3,
                     maxQueueSize: config.maxQueueSize || 100,
                     taskTimeout: node.timeout,

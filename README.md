@@ -20,7 +20,7 @@ Run heavy computations in Node-RED without slowing down your flows. This node wo
 
 ## How It Works
 
-Drop an **async function** node into your flow. Write your code just like you would in a regular function node. The difference? Your code runs in a separate worker thread, so heavy operations won't freeze Node-RED.
+Drop an **async function** node into your flow. Write your code just like you would in a regular function node. The difference? Your code runs in a separate worker thread by default (or a child process if configured), so heavy operations won't freeze Node-RED.
 
 ## When to Use This
 
@@ -40,9 +40,10 @@ Drop an **async function** node into your flow. Write your code just like you wo
 - **Function** – Your JavaScript code. Works with `async/await`, `return`, and `require()`.
 - **Outputs** – How many output wires (0-10). Return an array for multiple outputs.
 - **Timeout** – Maximum seconds to wait before killing the worker. Default: 30 seconds.
+- **Runtime** – Worker Threads (default, fastest) or Child Process (for native modules like `gl`).
 
 ### Worker Pool
-- **Workers** – Fixed number of worker threads (1-16). Each node maintains exactly this many workers. Default: 3.
+- **Workers** – Fixed number of workers (1-16). Each node maintains exactly this many workers. Default: 3.
 - **Queue Size** – Messages to queue when all workers are occupied. Default: 100.
 
 ### Modules
@@ -165,7 +166,7 @@ The node shows you what's happening in real time:
 
 ## Performance Notes
 
-- Worker threads add about 5-10ms overhead per message.
+- Worker threads add about 5-10ms overhead per message (child process mode is higher).
 - Best for operations taking more than 10ms to run.
 - Each node maintains a fixed pool of workers—no startup delay or dynamic scaling overhead.
 - Workers are dedicated per-node, ensuring predictable performance.
