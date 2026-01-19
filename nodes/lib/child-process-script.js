@@ -191,7 +191,7 @@ process.on('message', async (data) => {
             try {
                 const restoreStart = process.hrtime.bigint();
                 const restoredMsg = await serializer.restoreBuffers(msg);
-                const transferToPythonMs = hrtimeDiffToMs(restoreStart);
+                const transferToWorkerMs = hrtimeDiffToMs(restoreStart);
 
                 const cacheKey = code + '|' + moduleVars.join(',');
                 let userFunction = getCachedFunction(cacheKey);
@@ -206,16 +206,16 @@ process.on('message', async (data) => {
 
                 const encodeStart = process.hrtime.bigint();
                 const encodedResult = await serializer.sanitizeMessage(rawResult, null, taskId);
-                const transferToJsMs = hrtimeDiffToMs(encodeStart);
+                const transferToMainMs = hrtimeDiffToMs(encodeStart);
 
                 sendMessage({
                     type: 'result',
                     taskId,
                     result: encodedResult,
                     performance: {
-                        transfer_to_python_ms: transferToPythonMs,
-                        execution_ms: executionMs,
-                        transfer_to_js_ms: transferToJsMs
+                        transferToWorkerMs,
+                        executionMs,
+                        transferToMainMs
                     }
                 });
             } catch (err) {

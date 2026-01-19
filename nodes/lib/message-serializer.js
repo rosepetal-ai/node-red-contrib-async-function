@@ -2,7 +2,7 @@
  * Async Message Serializer
  *
  * Fast message cloning for worker thread communication.
- * Matches the shared-memory + msg-copy semantics used by the python executor "hot mode":
+ * Matches the shared-memory + msg-copy semantics used by the legacy executor "hot mode":
  * - Buffers (and typed arrays) can be offloaded to shared memory with descriptors
  * - Base64 fallback for shared-memory failures
  * - Circular references preserved via WeakMap

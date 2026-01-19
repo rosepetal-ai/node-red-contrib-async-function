@@ -150,7 +150,7 @@ async function initializeWorker() {
                     // Restore + execute user code
                     const restoreStart = process.hrtime.bigint();
                     const restoredMsg = await serializer.restoreBuffers(msg);
-                    const transferToPythonMs = hrtimeDiffToMs(restoreStart);
+                    const transferToWorkerMs = hrtimeDiffToMs(restoreStart);
 
                     // Cache key includes code + module vars to handle different module configs
                     const cacheKey = code + '|' + moduleVars.join(',');
@@ -169,7 +169,7 @@ async function initializeWorker() {
                     // Offload buffers in the result (large Buffers -> shared memory descriptors)
                     const encodeStart = process.hrtime.bigint();
                     const encodedResult = await serializer.sanitizeMessage(rawResult, null, taskId);
-                    const transferToJsMs = hrtimeDiffToMs(encodeStart);
+                    const transferToMainMs = hrtimeDiffToMs(encodeStart);
 
                     // Send result back to main thread
                     parentPort.postMessage({
@@ -177,9 +177,9 @@ async function initializeWorker() {
                         taskId,
                         result: encodedResult,
                         performance: {
-                            transfer_to_python_ms: transferToPythonMs,
-                            execution_ms: executionMs,
-                            transfer_to_js_ms: transferToJsMs
+                            transferToWorkerMs,
+                            executionMs,
+                            transferToMainMs
                         }
                     });
 

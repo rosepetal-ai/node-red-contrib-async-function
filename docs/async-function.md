@@ -238,9 +238,9 @@ Every processed message includes timing information in `msg.performance[nodeName
 
 ```javascript
 msg.performance["my async function"] = {
-    transferToPythonMs: 1.23,  // Time to restore buffers in worker
+    transferToWorkerMs: 1.23,  // Time to restore buffers in worker
     executionMs: 45.67,        // Time to execute user code
-    transferToJsMs: 0.89,      // Time to serialize result
+    transferToMainMs: 0.89,    // Time to serialize result
     totalMs: 52.34             // End-to-end processing time
 }
 ```
@@ -249,9 +249,9 @@ msg.performance["my async function"] = {
 
 | Metric | Description |
 |--------|-------------|
-| `transferToPythonMs` | Time spent restoring shared memory buffers before code execution |
+| `transferToWorkerMs` | Time spent restoring shared memory buffers before code execution |
 | `executionMs` | Time spent executing your JavaScript code |
-| `transferToJsMs` | Time spent serializing the result for transfer back to main thread |
+| `transferToMainMs` | Time spent serializing the result for transfer back to main thread |
 | `totalMs` | Total wall-clock time from message receipt to output |
 
 ## Shared Memory

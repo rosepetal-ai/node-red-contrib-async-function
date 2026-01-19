@@ -108,11 +108,30 @@ function applyPerformanceMetrics(node, originalMsg, targetMsg, performance) {
     }
     copyPerformance(targetMsg.performance, collected);
 
+    const transferToWorkerMs = normalizePerformanceValue(
+        performance.transferToWorkerMs ??
+        performance.transfer_to_worker_ms ??
+        performance.transferToPythonMs ??
+        performance.transfer_to_python_ms
+    );
+    const executionMs = normalizePerformanceValue(
+        performance.executionMs ?? performance.execution_ms
+    );
+    const transferToMainMs = normalizePerformanceValue(
+        performance.transferToMainMs ??
+        performance.transfer_to_main_ms ??
+        performance.transferToJsMs ??
+        performance.transfer_to_js_ms
+    );
+    const totalMs = normalizePerformanceValue(
+        performance.totalMs ?? performance.total_ms ?? performance.total
+    );
+
     collected[label] = {
-        transferToPythonMs: normalizePerformanceValue(performance.transfer_to_python_ms ?? performance.transferToPythonMs),
-        executionMs: normalizePerformanceValue(performance.execution_ms ?? performance.executionMs),
-        transferToJsMs: normalizePerformanceValue(performance.transfer_to_js_ms ?? performance.transferToJsMs),
-        totalMs: normalizePerformanceValue(performance.totalMs ?? performance.total_ms ?? performance.total)
+        transferToWorkerMs,
+        executionMs,
+        transferToMainMs,
+        totalMs
     };
 
     targetMsg.performance = collected;
