@@ -10,6 +10,50 @@
 
 const SHARED_SENTINEL_KEY = '__rosepetal_shm_path__';
 const SHARED_BASE64_KEY = '__rosepetal_base64__';
+const TRANSFER_SENTINEL_KEY = '__rosepetal_transfer_ab__';
+
+function canTransferBuffer(value) {
+    if (!Buffer.isBuffer(value)) {
+        return false;
+    }
+
+    if (!value.buffer || !(value.buffer instanceof ArrayBuffer)) {
+        return false;
+    }
+
+    // Avoid detaching pooled/sliced buffers that share backing stores
+    if (value.byteOffset !== 0) {
+        return false;
+    }
+
+    if (value.byteLength !== value.buffer.byteLength) {
+        return false;
+    }
+
+    return true;
+}
+
+function createTransferDescriptor(value, transferList, transferSet) {
+    if (!transferList) {
+        return null;
+    }
+
+    if (!canTransferBuffer(value)) {
+        return null;
+    }
+
+    const arrayBuffer = value.buffer;
+    if (transferSet && !transferSet.has(arrayBuffer)) {
+        transferSet.add(arrayBuffer);
+        transferList.push(arrayBuffer);
+    }
+
+    return {
+        [TRANSFER_SENTINEL_KEY]: arrayBuffer,
+        byteOffset: value.byteOffset,
+        byteLength: value.byteLength
+    };
+}
 
 /**
  * Async Message Serializer Class
@@ -31,18 +75,29 @@ class AsyncMessageSerializer {
      * @param {object} msg - Message object to sanitize
      * @param {object} node - Node-RED node instance (for warnings)
      * @param {number|string} taskId - Task identifier for shared memory tracking
+     * @param {object} options - Optional serialization options
      * @returns {Promise<object>} Sanitized message object
      */
-    async sanitizeMessage(msg, node, taskId) {
+    async sanitizeMessage(msg, node, taskId, options = {}) {
         if (!msg || typeof msg !== 'object') {
             return msg;
         }
 
         const seen = new WeakMap();
         const bufferIndex = { value: 0 }; // Mutable counter for buffer indexing
+        const transferMode = typeof options.transferMode === 'string' ? options.transferMode : 'shared';
+        const transferList = Array.isArray(options.transferList) ? options.transferList : null;
+        const transferSet = options.transferSet || (transferList ? new Set() : null);
+        const bufferCache = options.bufferCache || new WeakMap();
+        const cloneOptions = {
+            transferMode,
+            transferList,
+            transferSet,
+            bufferCache
+        };
 
         try {
-            return await this.cloneValue(msg, seen, bufferIndex, taskId, 0);
+            return await this.cloneValue(msg, seen, bufferIndex, taskId, 0, cloneOptions);
         } catch (err) {
             if (node) {
                 node.warn(`Message cloning failed: ${err.message}, creating minimal message`);
@@ -58,11 +113,10 @@ class AsyncMessageSerializer {
      * @param {number} depth - Current recursion depth
      * @param {object} bufferIndex - Mutable buffer index counter
      * @param {number|string} taskId - Task identifier
-     * @param {object} node - Node-RED node instance
-     * @param {string} path - Current property path (for warnings)
+     * @param {object} options - Serialization options
      * @returns {Promise<*>} Cloned value
      */
-    async cloneValue(value, seen, bufferIndex, taskId, depth) {
+    async cloneValue(value, seen, bufferIndex, taskId, depth, options) {
         // Optional depth guard (disabled by default for speed)
         if (this.maxDepth > 0 && depth > this.maxDepth) {
             return null;
@@ -83,14 +137,74 @@ class AsyncMessageSerializer {
             return undefined;
         }
 
-        // Buffers + typed arrays: offload to shared memory when above threshold
+        // Buffers + typed arrays: transfer, inline copy, or shared memory
         if (Buffer.isBuffer(value)) {
-            return await this.shmManager.writeBuffer(value, taskId, bufferIndex.value++);
+            if (options && options.bufferCache && options.bufferCache.has(value)) {
+                return options.bufferCache.get(value);
+            }
+
+            if (options && options.transferMode === 'copy') {
+                if (options.bufferCache) {
+                    options.bufferCache.set(value, value);
+                }
+                return value;
+            }
+
+            if (options && options.transferMode === 'transfer' && options.transferList) {
+                const transferDescriptor = createTransferDescriptor(value, options.transferList, options.transferSet);
+                if (transferDescriptor) {
+                    if (options.bufferCache) {
+                        options.bufferCache.set(value, transferDescriptor);
+                    }
+                    return transferDescriptor;
+                }
+
+                if (options.bufferCache) {
+                    options.bufferCache.set(value, value);
+                }
+                return value;
+            }
+
+            const sharedDescriptor = await this.shmManager.writeBuffer(value, taskId, bufferIndex.value++);
+            if (options && options.bufferCache) {
+                options.bufferCache.set(value, sharedDescriptor);
+            }
+            return sharedDescriptor;
         }
 
         if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
             const asBuffer = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
-            return await this.shmManager.writeBuffer(asBuffer, taskId, bufferIndex.value++);
+            if (options && options.bufferCache && options.bufferCache.has(asBuffer)) {
+                return options.bufferCache.get(asBuffer);
+            }
+
+            if (options && options.transferMode === 'copy') {
+                if (options.bufferCache) {
+                    options.bufferCache.set(asBuffer, asBuffer);
+                }
+                return asBuffer;
+            }
+
+            if (options && options.transferMode === 'transfer' && options.transferList) {
+                const transferDescriptor = createTransferDescriptor(asBuffer, options.transferList, options.transferSet);
+                if (transferDescriptor) {
+                    if (options.bufferCache) {
+                        options.bufferCache.set(asBuffer, transferDescriptor);
+                    }
+                    return transferDescriptor;
+                }
+
+                if (options.bufferCache) {
+                    options.bufferCache.set(asBuffer, asBuffer);
+                }
+                return asBuffer;
+            }
+
+            const sharedDescriptor = await this.shmManager.writeBuffer(asBuffer, taskId, bufferIndex.value++);
+            if (options && options.bufferCache) {
+                options.bufferCache.set(asBuffer, sharedDescriptor);
+            }
+            return sharedDescriptor;
         }
 
         if (type === 'object') {
@@ -104,7 +218,7 @@ class AsyncMessageSerializer {
 
             if (Array.isArray(value)) {
                 for (let i = 0; i < value.length; i++) {
-                    const clonedItem = await this.cloneValue(value[i], seen, bufferIndex, taskId, depth + 1);
+                    const clonedItem = await this.cloneValue(value[i], seen, bufferIndex, taskId, depth + 1, options);
                     clone[i] = clonedItem === undefined ? null : clonedItem;
                 }
                 return clone;
@@ -113,7 +227,7 @@ class AsyncMessageSerializer {
             const keys = Object.keys(value);
             for (let i = 0; i < keys.length; i++) {
                 const key = keys[i];
-                const clonedVal = await this.cloneValue(value[key], seen, bufferIndex, taskId, depth + 1);
+                const clonedVal = await this.cloneValue(value[key], seen, bufferIndex, taskId, depth + 1, options);
                 if (clonedVal !== undefined) {
                     clone[key] = clonedVal;
                 }
@@ -132,10 +246,11 @@ class AsyncMessageSerializer {
      */
     async restoreBuffers(value) {
         const seen = new WeakMap();
-        return this.restoreValue(value, seen);
+        const descriptorCache = new WeakMap();
+        return this.restoreValue(value, seen, descriptorCache);
     }
 
-    async restoreValue(value, seen) {
+    async restoreValue(value, seen, descriptorCache) {
         // Handle null/undefined
         if (value === null || value === undefined) {
             return value;
@@ -162,7 +277,7 @@ class AsyncMessageSerializer {
             seen.set(value, result);
 
             for (let i = 0; i < value.length; i++) {
-                result[i] = await this.restoreValue(value[i], seen);
+                result[i] = await this.restoreValue(value[i], seen, descriptorCache);
             }
 
             return result;
@@ -170,10 +285,42 @@ class AsyncMessageSerializer {
 
         // Handle objects
         if (type === 'object') {
+            // Transfer-list descriptor
+            if (Object.prototype.hasOwnProperty.call(value, TRANSFER_SENTINEL_KEY)) {
+                if (descriptorCache && descriptorCache.has(value)) {
+                    return descriptorCache.get(value);
+                }
+
+                try {
+                    const arrayBuffer = value[TRANSFER_SENTINEL_KEY];
+                    if (!(arrayBuffer instanceof ArrayBuffer)) {
+                        return Buffer.alloc(0);
+                    }
+
+                    const byteOffset = Number(value.byteOffset) || 0;
+                    const byteLength = Number(value.byteLength) || arrayBuffer.byteLength;
+                    const buffer = Buffer.from(arrayBuffer, byteOffset, byteLength);
+                    if (descriptorCache) {
+                        descriptorCache.set(value, buffer);
+                    }
+                    return buffer;
+                } catch (_err) {
+                    return Buffer.alloc(0);
+                }
+            }
+
             // Shared memory descriptor
             if (Object.prototype.hasOwnProperty.call(value, SHARED_SENTINEL_KEY)) {
+                if (descriptorCache && descriptorCache.has(value)) {
+                    return descriptorCache.get(value);
+                }
+
                 try {
-                    return await this.shmManager.readBuffer(value, { deleteAfterRead: true });
+                    const buffer = await this.shmManager.readBuffer(value, { deleteAfterRead: true });
+                    if (descriptorCache) {
+                        descriptorCache.set(value, buffer);
+                    }
+                    return buffer;
                 } catch (_err) {
                     return Buffer.alloc(0);
                 }
@@ -181,8 +328,16 @@ class AsyncMessageSerializer {
 
             // Base64 fallback
             if (Object.prototype.hasOwnProperty.call(value, SHARED_BASE64_KEY)) {
+                if (descriptorCache && descriptorCache.has(value)) {
+                    return descriptorCache.get(value);
+                }
+
                 try {
-                    return Buffer.from(value[SHARED_BASE64_KEY] || '', 'base64');
+                    const buffer = Buffer.from(value[SHARED_BASE64_KEY] || '', 'base64');
+                    if (descriptorCache) {
+                        descriptorCache.set(value, buffer);
+                    }
+                    return buffer;
                 } catch (_err) {
                     return Buffer.alloc(0);
                 }
@@ -198,7 +353,7 @@ class AsyncMessageSerializer {
             const entries = Object.entries(value);
             for (let i = 0; i < entries.length; i++) {
                 const [key, val] = entries[i];
-                result[key] = await this.restoreValue(val, seen);
+                result[key] = await this.restoreValue(val, seen, descriptorCache);
             }
 
             return result;

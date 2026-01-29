@@ -17,6 +17,7 @@ const DEFAULT_CONFIG = {
     taskTimeout: 30000,         // Default task timeout: 30s
     maxQueueSize: 100,          // Max queued messages
     shmThreshold: 0,            // Always use shared memory for Buffers
+    transferMode: 'transfer',   // transfer | shared | copy
     libs: [],                   // External modules to load in workers
     nodeRedUserDir: null,       // Node-RED user directory for module resolution
     workerScript: path.join(__dirname, 'worker-script.js')
@@ -79,6 +80,7 @@ class WorkerPool {
                 const worker = new Worker(this.config.workerScript, {
                     workerData: {
                         shmThreshold: this.config.shmThreshold,
+                        transferMode: this.config.transferMode,
                         libs: this.config.libs || [],
                         nodeRedUserDir: this.config.nodeRedUserDir
                     }
@@ -262,19 +264,31 @@ class WorkerPool {
         workerState.state = WorkerState.BUSY;
         workerState.taskId = taskId;
 
-        this.serializer.sanitizeMessage(msg, null, taskId).then(sanitizedMsg => {
+        const transferList = this.config.transferMode === 'transfer' ? [] : null;
+        const transferSet = transferList ? new Set() : null;
+
+        this.serializer.sanitizeMessage(msg, null, taskId, {
+            transferMode: this.config.transferMode,
+            transferList,
+            transferSet
+        }).then(sanitizedMsg => {
             // Start timeout after message preparation (matches hot-mode behavior)
             this.timeoutManager.startTimeout(taskId, timeout, () => {
                 this.handleTimeout(workerState, taskId);
             });
 
             // Send task to worker
-            workerState.worker.postMessage({
+            const payload = {
                 type: 'execute',
                 taskId,
                 code,
                 msg: sanitizedMsg
-            });
+            };
+            if (transferList && transferList.length > 0) {
+                workerState.worker.postMessage(payload, transferList);
+            } else {
+                workerState.worker.postMessage(payload);
+            }
         }).catch(err => {
             // Fail task if message prep fails
             const callback = this.callbacks.get(taskId);

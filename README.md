@@ -62,7 +62,7 @@ return msg;
 ```
 
 ### Buffer Handling
-- **Buffers** – Any `Buffer` in `msg` is transferred through shared memory (`/dev/shm` on Linux, otherwise `os.tmpdir()`), with base64 fallback if needed.
+- **Buffers** – Worker Threads use zero-copy transfer when possible. Child Process mode and non-transferable buffers fall back to shared memory (`/dev/shm` on Linux, otherwise `os.tmpdir()`), with base64 fallback if needed.
 
 ## Typical Flow
 
@@ -170,7 +170,7 @@ The node shows you what's happening in real time:
 - Best for operations taking more than 10ms to run.
 - Each node maintains a fixed pool of workers—no startup delay or dynamic scaling overhead.
 - Workers are dedicated per-node, ensuring predictable performance.
-- **Binary Fast Path**: Buffers use shared memory transfer (base64 fallback), keeping messages responsive even with large payloads.
+- **Binary Fast Path**: Worker threads use zero-copy transfer when possible; shared memory is the fallback.
 - Event loop never blocks, even when processing multi-MB binary data (images, files, etc.).
 
 ## Error Handling

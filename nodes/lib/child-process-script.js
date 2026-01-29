@@ -16,6 +16,7 @@ const { AsyncMessageSerializer } = require('./message-serializer');
 // Track worker state
 let isTerminating = false;
 let isInitialized = false;
+let transferMode = 'shared';
 
 // AsyncLocalStorage for tracking task context across async boundaries
 const taskContext = new AsyncLocalStorage();
@@ -139,6 +140,9 @@ async function initializeWorker(initData) {
     configureBaseRequire(nodeRedUserDir);
 
     const threshold = initData && typeof initData.shmThreshold === 'number' ? initData.shmThreshold : undefined;
+    if (initData && typeof initData.transferMode === 'string') {
+        transferMode = initData.transferMode;
+    }
     shmManager = new SharedMemoryManager({
         threshold,
         trackAttachments: false,
@@ -205,7 +209,9 @@ process.on('message', async (data) => {
                 const executionMs = hrtimeDiffToMs(execStart);
 
                 const encodeStart = process.hrtime.bigint();
-                const encodedResult = await serializer.sanitizeMessage(rawResult, null, taskId);
+                const encodedResult = await serializer.sanitizeMessage(rawResult, null, taskId, {
+                    transferMode
+                });
                 const transferToMainMs = hrtimeDiffToMs(encodeStart);
 
                 sendMessage({

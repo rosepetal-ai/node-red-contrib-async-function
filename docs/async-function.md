@@ -27,7 +27,7 @@ The node accepts any standard Node-RED message object. The `msg` object is seria
 - **Primitives**: strings, numbers, booleans, null
 - **Objects**: Plain JavaScript objects (must be serializable)
 - **Arrays**: Arrays of any serializable types
-- **Buffers**: Binary data (transferred via shared memory for efficiency)
+- **Buffers**: Binary data (zero-copy transfer in worker threads, shared memory fallback)
 - **Nested structures**: Deep object hierarchies are fully supported
 
 **Not supported:**
@@ -221,7 +221,7 @@ The node uses Node.js worker_threads module by default, with additional optimiza
 
 - **Code Caching**: User code is compiled once per unique code string and cached (LRU cache with 100 entry limit). Subsequent executions reuse the compiled AsyncFunction.
 - **Message Optimization**: Only `msg.*` properties referenced in your code are serialized and sent to workers.
-- **Shared Memory**: Large buffers bypass serialization entirely using filesystem-based shared memory.
+- **Buffer Transfer**: Worker threads use zero-copy transfer for eligible Buffers. Child process mode and non-transferable buffers fall back to filesystem-based shared memory.
 
 ### Processing Characteristics
 
@@ -249,7 +249,7 @@ msg.performance["my async function"] = {
 
 | Metric | Description |
 |--------|-------------|
-| `transferToWorkerMs` | Time spent restoring shared memory buffers before code execution |
+| `transferToWorkerMs` | Time spent restoring buffers before code execution |
 | `executionMs` | Time spent executing your JavaScript code |
 | `transferToMainMs` | Time spent serializing the result for transfer back to main thread |
 | `totalMs` | Total wall-clock time from message receipt to output |
@@ -258,12 +258,12 @@ msg.performance["my async function"] = {
 
 ### How Large Buffers Are Handled
 
-When messages contain `Buffer` objects, the node uses shared memory for efficient transfer:
+When messages contain `Buffer` objects, the node prefers zero-copy transfer in worker threads. If that isn't possible (or when running in child process mode), it falls back to shared memory:
 
-1. **Detection**: All Buffer objects in the message are identified during serialization
-2. **Offloading**: Buffers are written to the shared memory filesystem
-3. **Descriptor**: A lightweight descriptor replaces the buffer in the serialized message
-4. **Restoration**: The worker reads buffers from shared memory before executing your code
+1. **Detection**: Buffer objects in the message are identified during serialization
+2. **Transfer (worker threads)**: Buffers are transferred by ownership when safe (zero-copy)
+3. **Fallback (child process / non-transferable)**: Buffers are written to shared memory
+4. **Restoration**: The worker restores Buffers before executing your code
 5. **Cleanup**: Shared memory files are automatically deleted after task completion
 
 ### Platform-Specific Behavior
@@ -289,7 +289,8 @@ rosepetal-async-{pid}-{taskId}-{bufferIndex}-{timestamp}-{random}.bin
 
 ### Buffer Performance Tips
 
-- Shared memory eliminates serialization overhead for binary data
+- Zero-copy transfer avoids file I/O for large Buffers in worker threads
+- Shared memory remains the fallback path when transfer isn't available
 - Event loop never blocks, even when processing multi-MB buffers
 - For best performance on Linux, ensure `/dev/shm` has sufficient space
 
@@ -449,7 +450,7 @@ msg.exif = {
 return msg;
 ```
 
-Binary buffer transferred via shared memory for efficiency.
+Binary buffer transferred efficiently (zero-copy when possible).
 
 ### Cryptographic Hash Generation
 

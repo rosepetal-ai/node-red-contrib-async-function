@@ -612,7 +612,7 @@ return msg;</pre>
         <dt>Queue Size</dt>
         <dd>Maximum number of messages queued when all workers are busy (10-1000). Default: 100.</dd>
         <dt>Buffers</dt>
-        <dd>All Buffers are transferred via shared memory when possible (falls back to base64 if needed).</dd>
+        <dd>Worker threads use zero-copy transfer when possible; shared memory is used as a fallback.</dd>
     </dl>
 
     <h3>Status Display</h3>
@@ -639,7 +639,7 @@ return msg;</pre>
         <li>Best for CPU-intensive operations (>10ms execution time)</li>
         <li>For simple operations, use the standard function node</li>
         <li>Workers are pooled and reused for efficiency</li>
-        <li><b>Buffer Transfer:</b> Buffers are streamed through shared memory (base64 fallback)</li>
+        <li><b>Buffer Transfer:</b> Worker threads use zero-copy transfer when possible; shared memory is the fallback</li>
         <li>Event loop never blocks, even when processing multi-MB binary data (images, files, etc.)</li>
         <li>Message transfer is optimized by copying only referenced <code>msg.*</code> keys when possible</li>
         <li>Timing is recorded on <code>msg.performance</code> under the node label</li>

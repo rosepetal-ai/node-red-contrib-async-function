@@ -84,6 +84,14 @@ function hrtimeDiffToMs(start) {
     return Number(diff) / 1e6;
 }
 
+function normalizeTransferMode(mode, executionMode) {
+    const normalized = typeof mode === 'string' ? mode.trim().toLowerCase() : '';
+    if (normalized === 'transfer' || normalized === 'shared' || normalized === 'copy') {
+        return normalized;
+    }
+    return executionMode === 'worker_threads' ? 'transfer' : 'shared';
+}
+
 function applyPerformanceMetrics(node, originalMsg, targetMsg, performance) {
     if (!performance || typeof performance !== 'object') {
         return;
@@ -241,6 +249,7 @@ module.exports = function(RED) {
         }
 
         const nodeRedUserDir = resolveNodeRedUserDir(RED);
+        const transferMode = normalizeTransferMode(config.transferMode, node.executionMode);
 
         // Verify modules are resolvable WITHOUT loading them in the main thread.
         // Loading native modules (like 'gl') in main thread prevents them from
@@ -276,6 +285,7 @@ module.exports = function(RED) {
                     maxQueueSize: config.maxQueueSize || 100,
                     taskTimeout: node.timeout,
                     shmThreshold: 0,
+                    transferMode,
                     libs: node.libs,
                     nodeRedUserDir
                 });

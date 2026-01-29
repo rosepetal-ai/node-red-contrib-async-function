@@ -16,6 +16,7 @@ const { AsyncMessageSerializer } = require('./message-serializer');
 
 // Track worker state
 let isTerminating = false;
+const transferMode = workerData && typeof workerData.transferMode === 'string' ? workerData.transferMode : 'transfer';
 
 // AsyncLocalStorage for tracking task context across async boundaries
 // This ensures unhandled rejections can be attributed to the correct task
@@ -168,11 +169,17 @@ async function initializeWorker() {
 
                     // Offload buffers in the result (large Buffers -> shared memory descriptors)
                     const encodeStart = process.hrtime.bigint();
-                    const encodedResult = await serializer.sanitizeMessage(rawResult, null, taskId);
+                    const transferList = transferMode === 'transfer' ? [] : null;
+                    const transferSet = transferList ? new Set() : null;
+                    const encodedResult = await serializer.sanitizeMessage(rawResult, null, taskId, {
+                        transferMode,
+                        transferList,
+                        transferSet
+                    });
                     const transferToMainMs = hrtimeDiffToMs(encodeStart);
 
                     // Send result back to main thread
-                    parentPort.postMessage({
+                    const payload = {
                         type: 'result',
                         taskId,
                         result: encodedResult,
@@ -181,7 +188,13 @@ async function initializeWorker() {
                             executionMs,
                             transferToMainMs
                         }
-                    });
+                    };
+
+                    if (transferList && transferList.length > 0) {
+                        parentPort.postMessage(payload, transferList);
+                    } else {
+                        parentPort.postMessage(payload);
+                    }
 
                 } catch (err) {
                     // Send error back to main thread

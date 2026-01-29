@@ -17,6 +17,7 @@ const DEFAULT_CONFIG = {
     taskTimeout: 30000,         // Default task timeout: 30s
     maxQueueSize: 100,          // Max queued messages
     shmThreshold: 0,            // Always use shared memory for Buffers
+    transferMode: 'shared',     // shared | copy (transfer not supported for child processes)
     libs: [],                   // External modules to load in workers
     nodeRedUserDir: null,       // Node-RED user directory for module resolution
     workerScript: path.join(__dirname, 'child-process-script.js')
@@ -166,7 +167,8 @@ class ChildProcessPool {
                     type: 'init',
                     libs: this.config.libs || [],
                     nodeRedUserDir: this.config.nodeRedUserDir,
-                    shmThreshold: this.config.shmThreshold
+                    shmThreshold: this.config.shmThreshold,
+                    transferMode: this.config.transferMode
                 });
             } catch (err) {
                 clearTimeout(readyTimeout);
@@ -298,7 +300,9 @@ class ChildProcessPool {
         workerState.state = WorkerState.BUSY;
         workerState.taskId = taskId;
 
-        this.serializer.sanitizeMessage(msg, null, taskId).then(sanitizedMsg => {
+        this.serializer.sanitizeMessage(msg, null, taskId, {
+            transferMode: this.config.transferMode
+        }).then(sanitizedMsg => {
             this.timeoutManager.startTimeout(taskId, timeout, () => {
                 this.handleTimeout(workerState, taskId);
             });
