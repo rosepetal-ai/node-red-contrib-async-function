@@ -300,12 +300,19 @@ rosepetal-async-{pid}-{taskId}-{bufferIndex}-{timestamp}-{random}.bin
 
 | Feature | Reason | Alternative |
 |---------|--------|-------------|
-| `context.get/set` | Context store is main-thread only | Pass data via `msg` properties |
-| `flow.get/set` | Flow context is main-thread only | Pass data via `msg` properties |
-| `global.get/set` | Global context is main-thread only | Pass data via `msg` properties |
 | `node.send()` | Node instance not available | Use `return` statement |
-| `node.warn/error/log()` | Node instance not available | Use `console.log/warn/error()` |
 | `env.get()` | Environment helper not available | Access `process.env` directly |
+
+### Context + Node Helpers (Snapshot)
+
+`context.get/set`, `flow.get/set`, and `global.get/set` are available with snapshot semantics. Reads come from the snapshot taken at the start of execution; writes are applied after your function completes. The snapshot only includes literal keys detected in your code (e.g., `flow.get("count")`). Store-specific context selection is not supported (default store only). `node.warn/error/log()` are collected and forwarded to the main thread.
+
+Example:
+```javascript
+const count = flow.get('count') || 0;
+flow.set('count', count + 1);
+node.warn(`count=${count + 1}`);
+```
 
 ### Serialization Requirements
 
@@ -319,8 +326,8 @@ The `msg` object must be serializable:
 
 - **~5-10ms overhead**: Not suitable for sub-millisecond operations
 - **Memory usage**: Each worker consumes ~10-20MB
-- **No direct node access**: Cannot access node properties or methods
-- **Asynchronous only**: Cannot perform synchronous I/O with main thread
+- **Limited node access**: `node.warn/error/log()` are available, but other node methods are not
+- **Snapshot context**: Context reads are from the snapshot; updates apply after execution
 
 ## Real-World Examples
 

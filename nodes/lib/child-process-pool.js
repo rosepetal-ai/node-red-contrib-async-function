@@ -333,7 +333,7 @@ class ChildProcessPool {
      * @param {object} message - Message from worker
      */
     handleWorkerMessage(workerState, message) {
-        const { type, taskId, result, error, performance } = message || {};
+        const { type, taskId, result, error, performance, contextUpdates, logs } = message || {};
 
         if (type === 'result') {
             this.timeoutManager.cancelTimeout(taskId);
@@ -343,8 +343,18 @@ class ChildProcessPool {
                 this.callbacks.delete(taskId);
                 this.recycleWorker(workerState);
 
-                this.serializer.restoreBuffers(result).then(restoredResult => {
-                    callback(null, { result: restoredResult, performance: performance || null });
+                const restoreResult = this.serializer.restoreBuffers(result);
+                const restoreContext = contextUpdates
+                    ? this.serializer.restoreBuffers(contextUpdates)
+                    : Promise.resolve(contextUpdates);
+
+                Promise.all([restoreResult, restoreContext]).then(([restoredResult, restoredContext]) => {
+                    callback(null, {
+                        result: restoredResult,
+                        performance: performance || null,
+                        contextUpdates: restoredContext || null,
+                        logs: Array.isArray(logs) ? logs : null
+                    });
                 }).catch(restoreErr => {
                     callback(restoreErr instanceof Error ? restoreErr : new Error(String(restoreErr)), null);
                 });
@@ -366,7 +376,20 @@ class ChildProcessPool {
                 if (error && error.name) {
                     err.name = error.name;
                 }
-                callback(err, null);
+
+                if (contextUpdates) {
+                    this.serializer.restoreBuffers(contextUpdates).then(restoredContext => {
+                        err.contextUpdates = restoredContext;
+                        err.logs = Array.isArray(logs) ? logs : null;
+                        callback(err, null);
+                    }).catch(() => {
+                        err.logs = Array.isArray(logs) ? logs : null;
+                        callback(err, null);
+                    });
+                } else {
+                    err.logs = Array.isArray(logs) ? logs : null;
+                    callback(err, null);
+                }
             }
 
             this.recycleWorker(workerState);

@@ -31,7 +31,7 @@ Drop an **async function** node into your flow. Write your code just like you wo
 
 **Skip It For:**
 - Simple math or quick transformations (the regular function node is faster).
-- When you need `context`, `flow`, or `global` storage (coming in v2.0).
+- Flows that require live context reads/writes during execution (context is snapshot-based).
 
 ## Node Options
 
@@ -86,9 +86,11 @@ return msg;
 - `console` – Logging functions
 - `setTimeout`, `setInterval` – Timers
 
-**Not Available (Yet):**
-- `context`, `flow`, `global` – Coming in v2.0
-- `node` – Node instance methods
+**Notes:**
+- `context`, `flow`, `global` are snapshot-based: reads are from the snapshot, writes are applied after the function completes
+- Snapshot includes only literal keys found in `flow.get("key")` / `global.get("key")` / `context.get("key")`
+- Context store selection is not supported (default store only)
+- `node.warn/error/log` are collected and forwarded to the main thread
 - Non-serializable objects (functions, symbols, etc.)
 
 ## Code Examples

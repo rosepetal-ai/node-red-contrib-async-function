@@ -44,7 +44,7 @@ function extractMsgKeysFromCode(code) {
     return keys;
 }
 
-function buildWorkerInputMsg(originalMsg, code) {
+function buildWorkerInputMsgCore(originalMsg, code) {
     if (!originalMsg || typeof originalMsg !== 'object') {
         return originalMsg;
     }
@@ -91,6 +91,234 @@ function normalizeTransferMode(mode, executionMode) {
     }
     return executionMode === 'worker_threads' ? 'transfer' : 'shared';
 }
+
+const MSG_WRAPPER_KEY = '__rosepetal_msg';
+const CONTEXT_WRAPPER_KEY = '__rosepetal_context';
+
+function extractContextKeysFromCode(code) {
+    const flowKeys = new Set();
+    const globalKeys = new Set();
+    const contextKeys = new Set();
+
+    if (typeof code !== 'string' || !code.trim()) {
+        return { flow: flowKeys, global: globalKeys, context: contextKeys, usesContext: false };
+    }
+
+    const flowRegex = /flow\.(?:get|set)\(\s*['"]([^'"]+)['"]/g;
+    const flowBracket = /flow\[['"]([^'"]+)['"]\]/g;
+    const globalRegex = /global\.(?:get|set)\(\s*['"]([^'"]+)['"]/g;
+    const globalBracket = /global\[['"]([^'"]+)['"]\]/g;
+    const contextRegex = /context\.(?:get|set)\(\s*['"]([^'"]+)['"]/g;
+    const contextBracket = /context\[['"]([^'"]+)['"]\]/g;
+
+    let match = flowRegex.exec(code);
+    while (match) {
+        flowKeys.add(match[1]);
+        match = flowRegex.exec(code);
+    }
+
+    match = flowBracket.exec(code);
+    while (match) {
+        flowKeys.add(match[1]);
+        match = flowBracket.exec(code);
+    }
+
+    match = globalRegex.exec(code);
+    while (match) {
+        globalKeys.add(match[1]);
+        match = globalRegex.exec(code);
+    }
+
+    match = globalBracket.exec(code);
+    while (match) {
+        globalKeys.add(match[1]);
+        match = globalBracket.exec(code);
+    }
+
+    match = contextRegex.exec(code);
+    while (match) {
+        contextKeys.add(match[1]);
+        match = contextRegex.exec(code);
+    }
+
+    match = contextBracket.exec(code);
+    while (match) {
+        contextKeys.add(match[1]);
+        match = contextBracket.exec(code);
+    }
+
+    const usesContext = /\b(flow|global|context)\s*\./.test(code);
+    return { flow: flowKeys, global: globalKeys, context: contextKeys, usesContext };
+}
+
+function buildContextSnapshot(node, code) {
+    const empty = { flow: {}, global: {}, context: {} };
+    if (!node || typeof node.context !== 'function') {
+        return { snapshot: empty, usesContext: false };
+    }
+
+    const keys = extractContextKeysFromCode(code);
+    if (!keys.usesContext) {
+        return { snapshot: empty, usesContext: false };
+    }
+
+    const ctx = node.context();
+    if (!ctx) {
+        return { snapshot: empty, usesContext: true };
+    }
+
+    const snapshot = { flow: {}, global: {}, context: {} };
+    const coerceBufferLike = (value) => {
+        if (!value || typeof value !== 'object') {
+            return value;
+        }
+        if (Buffer.isBuffer(value)) {
+            return value;
+        }
+        if (value.type === 'Buffer' && Array.isArray(value.data)) {
+            return Buffer.from(value.data);
+        }
+        if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+            return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+        }
+        return value;
+    };
+
+    const readKeys = (scope, keySet, target) => {
+        if (!scope || typeof scope.get !== 'function') {
+            return;
+        }
+        keySet.forEach((key) => {
+            try {
+                target[key] = coerceBufferLike(scope.get(key));
+            } catch (_err) {
+                // Ignore context read errors to avoid blocking execution
+            }
+        });
+    };
+
+    readKeys(ctx.flow, keys.flow, snapshot.flow);
+    readKeys(ctx.global, keys.global, snapshot.global);
+    readKeys(ctx, keys.context, snapshot.context);
+
+    return { snapshot, usesContext: true };
+}
+
+function buildWorkerInputMsg(originalMsg, code, contextSnapshot, useContextWrapper) {
+    if (!useContextWrapper) {
+        return buildWorkerInputMsgCore(originalMsg, code);
+    }
+
+    const msgPayload = buildWorkerInputMsgCore(originalMsg, code);
+    return {
+        [MSG_WRAPPER_KEY]: msgPayload,
+        [CONTEXT_WRAPPER_KEY]: contextSnapshot || { flow: {}, global: {}, context: {} }
+    };
+}
+
+function rehydrateContextValue(value) {
+    if (Buffer.isBuffer(value)) {
+        return value;
+    }
+
+    if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+        return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+    }
+
+    if (Array.isArray(value)) {
+        return value.map((item) => rehydrateContextValue(item));
+    }
+
+    if (value && typeof value === 'object') {
+        if (value.type === 'Buffer' && Array.isArray(value.data)) {
+            return Buffer.from(value.data);
+        }
+
+        const obj = Array.isArray(value) ? [] : {};
+        Object.keys(value).forEach((key) => {
+            obj[key] = rehydrateContextValue(value[key]);
+        });
+        return obj;
+    }
+
+    return value;
+}
+
+function applyContextUpdates(node, updates, msg) {
+    if (!node || !updates || typeof updates !== 'object' || typeof node.context !== 'function') {
+        return;
+    }
+
+    const context = node.context();
+    if (!context) {
+        return;
+    }
+
+    const flowUpdates = updates.flow && typeof updates.flow === 'object' ? updates.flow : {};
+    const globalUpdates = updates.global && typeof updates.global === 'object' ? updates.global : {};
+    const contextUpdates = updates.context && typeof updates.context === 'object' ? updates.context : {};
+
+    const applyUpdates = (scope, scopeLabel, scopeUpdates) => {
+        if (!scope || typeof scope.set !== 'function') {
+            return;
+        }
+        Object.keys(scopeUpdates).forEach((key) => {
+            try {
+                scope.set(key, rehydrateContextValue(scopeUpdates[key]));
+            } catch (err) {
+                if (typeof node.warn === 'function') {
+                    node.warn(`Failed to set ${scopeLabel} context "${key}": ${err.message || err}`, msg);
+                }
+            }
+        });
+    };
+
+    applyUpdates(context.flow, 'flow', flowUpdates);
+    applyUpdates(context.global, 'global', globalUpdates);
+    applyUpdates(context, 'context', contextUpdates);
+}
+
+function applyWorkerLogs(node, logs, msg) {
+    if (!node || !Array.isArray(logs)) {
+        return;
+    }
+
+    logs.forEach((entry) => {
+        if (!entry) {
+            return;
+        }
+
+        const level = typeof entry === 'object' && entry.level ? String(entry.level) : 'warn';
+        const message = typeof entry === 'object' && entry.message !== undefined
+            ? entry.message
+            : entry;
+        let text = '';
+        if (typeof message === 'string') {
+            text = message;
+        } else {
+            try {
+                text = JSON.stringify(message);
+            } catch (_err) {
+                text = String(message);
+            }
+        }
+
+        if (level === 'error' && typeof node.error === 'function') {
+            node.error(text, msg);
+            return;
+        }
+
+        if (level === 'log' && typeof node.log === 'function') {
+            node.log(text);
+            return;
+        }
+
+        if (typeof node.warn === 'function') {
+            node.warn(text, msg);
+        }
+    });
+}
+
 
 function applyPerformanceMetrics(node, originalMsg, targetMsg, performance) {
     if (!performance || typeof performance !== 'object') {
@@ -334,22 +562,29 @@ module.exports = function(RED) {
             }
 
             const timing = { start: process.hrtime.bigint() };
-            const workerMsg = buildWorkerInputMsg(msg, node.func);
+            const contextInfo = buildContextSnapshot(node, node.func);
+            const workerMsg = buildWorkerInputMsg(msg, node.func, contextInfo.snapshot, contextInfo.usesContext);
 
             try {
                 const payload = await node.pool.executeTask(node.func, workerMsg, node.timeout);
 
                 let resultData;
                 let performanceData = null;
+                let contextUpdates = null;
+                let logs = null;
 
                 if (payload && typeof payload === 'object' && Object.prototype.hasOwnProperty.call(payload, 'result')) {
                     resultData = payload.result;
                     performanceData = payload.performance || null;
+                    contextUpdates = payload.contextUpdates || null;
+                    logs = payload.logs || null;
                 } else {
                     resultData = payload;
                 }
 
                 if (resultData === null || resultData === undefined) {
+                    applyContextUpdates(node, contextUpdates, msg);
+                    applyWorkerLogs(node, logs, msg);
                     done();
                     return;
                 }
@@ -357,6 +592,9 @@ module.exports = function(RED) {
                 const totalMs = hrtimeDiffToMs(timing.start);
                 const mergedPerformance = Object.assign({}, performanceData || {});
                 mergedPerformance.totalMs = totalMs;
+
+                applyContextUpdates(node, contextUpdates, msg);
+                applyWorkerLogs(node, logs, msg);
 
                 const output = mergeResult(msg, resultData);
                 applyPerformanceToResult(node, msg, output, mergedPerformance);
@@ -371,6 +609,13 @@ module.exports = function(RED) {
                     shape: 'dot',
                     text: `Error: ${err.message.substring(0, 20)}`
                 });
+
+                if (err && err.contextUpdates) {
+                    applyContextUpdates(node, err.contextUpdates, msg);
+                }
+                if (err && err.logs) {
+                    applyWorkerLogs(node, err.logs, msg);
+                }
 
                 // Log error
                 node.error(`Async function error: ${err.message}`, msg);

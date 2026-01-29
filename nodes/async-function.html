@@ -7,7 +7,7 @@
         defaults: {
             name: { value: '' },
             func: {
-                value: '// Write your async code here\n// The code runs in a worker thread or child process\n// Available: msg, return, async/await, require()\n// Not available: context, flow, global, node\n\nreturn msg;'
+                value: '// Write your async code here\n// The code runs in a worker thread or child process\n// Available: msg, return, async/await, require(), node.warn/error/log,\n//           flow/global/context (snapshot-based)\n\nreturn msg;'
             },
             outputs: { value: 1, validate: RED.validators.number() },
             timeout: { value: 30000, validate: RED.validators.number() },
@@ -507,8 +507,8 @@
                 <b>Tips:</b>
                 <ul style="margin-top:5px; margin-bottom:0;">
                 <li>Code runs in a worker thread or child process to prevent blocking</li>
-                <li>Available: <code>msg</code>, <code>return</code>, <code>async/await</code>, <code>require()</code></li>
-                <li>Not available: <code>context</code>, <code>flow</code>, <code>global</code>, <code>node</code></li>
+                <li>Available: <code>msg</code>, <code>return</code>, <code>async/await</code>, <code>require()</code>, <code>node</code>, <code>flow</code>, <code>global</code>, <code>context</code></li>
+                <li>Context access is snapshot-based (writes apply after execution)</li>
                 <li>Use "Child Process" runtime for native modules that require main thread (e.g., <code>gl</code>)</li>
                 <li>Return <code>msg</code> for single output, or <code>[msg1, msg2]</code> for multiple outputs</li>
                 <li>Return <code>null</code> to stop the flow</li>
@@ -546,14 +546,14 @@
         <li><code>return</code> - Return modified message or array of messages</li>
         <li><code>async/await</code> - Use async operations</li>
         <li><code>require()</code> - Import Node.js modules</li>
+        <li><code>node</code> - Node helpers (<code>warn</code>, <code>error</code>, <code>log</code>)</li>
+        <li><code>flow</code>, <code>global</code>, <code>context</code> - Snapshot-based context access (writes apply after execution)</li>
         <li><code>console</code> - Logging functions</li>
         <li><code>setTimeout</code>, <code>setInterval</code> - Timers</li>
     </ul>
 
     <h4>Not Available</h4>
     <ul>
-        <li><code>context</code>, <code>flow</code>, <code>global</code> - Context storage (v2.0 feature)</li>
-        <li><code>node</code> - Node instance methods</li>
         <li>Non-serializable objects in <code>msg</code></li>
     </ul>
 
@@ -642,6 +642,8 @@ return msg;</pre>
         <li><b>Buffer Transfer:</b> Worker threads use zero-copy transfer when possible; shared memory is the fallback</li>
         <li>Event loop never blocks, even when processing multi-MB binary data (images, files, etc.)</li>
         <li>Message transfer is optimized by copying only referenced <code>msg.*</code> keys when possible</li>
+        <li>Context snapshots include only literal keys found in <code>flow.get("key")</code> etc.</li>
+        <li>Context snapshots use the default context store only</li>
         <li>Timing is recorded on <code>msg.performance</code> under the node label</li>
     </ul>
 

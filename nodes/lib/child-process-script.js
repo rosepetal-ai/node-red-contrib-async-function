@@ -17,6 +17,8 @@ const { AsyncMessageSerializer } = require('./message-serializer');
 let isTerminating = false;
 let isInitialized = false;
 let transferMode = 'shared';
+const MSG_WRAPPER_KEY = '__rosepetal_msg';
+const CONTEXT_WRAPPER_KEY = '__rosepetal_context';
 
 // AsyncLocalStorage for tracking task context across async boundaries
 const taskContext = new AsyncLocalStorage();
@@ -69,6 +71,120 @@ function configureBaseRequire(nodeRedUserDir) {
         baseRequire = require;
     }
     global.require = baseRequire;
+}
+
+function createContextProxy(initialData, updates) {
+    const data = (initialData && typeof initialData === 'object') ? initialData : {};
+    const updateMap = updates || {};
+
+    const getValue = (key, fallback) => {
+        if (Object.prototype.hasOwnProperty.call(updateMap, key)) {
+            return updateMap[key];
+        }
+        if (Object.prototype.hasOwnProperty.call(data, key)) {
+            return data[key];
+        }
+        return fallback;
+    };
+
+    const setValue = (key, value) => {
+        data[key] = value;
+        updateMap[key] = value;
+    };
+
+    const api = {
+        get: (key, storeOrCb, cbMaybe) => {
+            let callback = null;
+            if (typeof storeOrCb === 'function') {
+                callback = storeOrCb;
+            } else if (typeof cbMaybe === 'function') {
+                callback = cbMaybe;
+            }
+
+            const value = Array.isArray(key)
+                ? key.map((entry) => getValue(entry, undefined))
+                : getValue(key, undefined);
+
+            if (typeof callback === 'function') {
+                callback(null, value);
+                return undefined;
+            }
+            return value;
+        },
+        set: (key, value, cbMaybe) => {
+            let callback = typeof cbMaybe === 'function' ? cbMaybe : null;
+            let entries = [];
+
+            if (Array.isArray(key)) {
+                if (Array.isArray(value)) {
+                    entries = key.map((entry, index) => [entry, value[index]]);
+                } else if (value && typeof value === 'object') {
+                    entries = key.map((entry) => [entry, value[entry]]);
+                }
+            } else if (key && typeof key === 'object' && value !== null) {
+                entries = Object.entries(key);
+                if (typeof value === 'function') {
+                    callback = value;
+                }
+            } else {
+                entries = [[key, value]];
+            }
+
+            entries.forEach(([entryKey, entryValue]) => {
+                if (entryKey !== undefined) {
+                    setValue(entryKey, entryValue);
+                }
+            });
+
+            if (typeof callback === 'function') {
+                callback(null);
+            }
+            return undefined;
+        }
+    };
+
+    return new Proxy(api, {
+        get(target, prop) {
+            if (typeof prop === 'symbol' || prop in target) {
+                return target[prop];
+            }
+            return getValue(prop, undefined);
+        },
+        set(target, prop, value) {
+            if (typeof prop === 'symbol' || prop in target) {
+                target[prop] = value;
+                return true;
+            }
+            setValue(prop, value);
+            return true;
+        }
+    });
+}
+
+function createNodeProxy(logs) {
+    const push = (level, args) => {
+        if (!Array.isArray(logs)) {
+            return;
+        }
+        if (!args || args.length === 0) {
+            logs.push({ level, message: '' });
+            return;
+        }
+        const message = args.length === 1 ? args[0] : args.map((arg) => arg);
+        logs.push({ level, message });
+    };
+
+    return {
+        warn: (...args) => {
+            push('warn', args);
+        },
+        error: (...args) => {
+            push('error', args);
+        },
+        log: (...args) => {
+            push('log', args);
+        }
+    };
 }
 
 function parseModuleSpec(spec) {
@@ -192,32 +308,59 @@ process.on('message', async (data) => {
 
     if (type === 'execute') {
         taskContext.run({ taskId }, async () => {
+            const contextUpdates = { flow: {}, global: {}, context: {} };
+            const logs = [];
+
             try {
                 const restoreStart = process.hrtime.bigint();
-                const restoredMsg = await serializer.restoreBuffers(msg);
+                const restoredPayload = await serializer.restoreBuffers(msg);
                 const transferToWorkerMs = hrtimeDiffToMs(restoreStart);
+
+                let contextPayload = {};
+                let restoredMsg = restoredPayload;
+                if (restoredPayload && typeof restoredPayload === 'object' && Object.prototype.hasOwnProperty.call(restoredPayload, MSG_WRAPPER_KEY)) {
+                    contextPayload = restoredPayload[CONTEXT_WRAPPER_KEY] || {};
+                    restoredMsg = restoredPayload[MSG_WRAPPER_KEY];
+                }
+
+                const nodeProxy = createNodeProxy(logs);
+                const flowProxy = createContextProxy(contextPayload.flow, contextUpdates.flow);
+                const globalProxy = createContextProxy(contextPayload.global, contextUpdates.global);
+                const contextProxy = createContextProxy(contextPayload.context, contextUpdates.context);
 
                 const cacheKey = code + '|' + moduleVars.join(',');
                 let userFunction = getCachedFunction(cacheKey);
                 if (!userFunction) {
-                    userFunction = new AsyncFunction('msg', ...moduleVars, code);
+                    userFunction = new AsyncFunction('msg', 'node', 'flow', 'global', 'context', ...moduleVars, code);
                     setCachedFunction(cacheKey, userFunction);
                 }
 
                 const execStart = process.hrtime.bigint();
-                const rawResult = await userFunction(restoredMsg, ...moduleValues);
+                const rawResult = await userFunction(restoredMsg, nodeProxy, flowProxy, globalProxy, contextProxy, ...moduleValues);
                 const executionMs = hrtimeDiffToMs(execStart);
 
                 const encodeStart = process.hrtime.bigint();
+                const bufferCache = new WeakMap();
                 const encodedResult = await serializer.sanitizeMessage(rawResult, null, taskId, {
-                    transferMode
+                    transferMode,
+                    bufferCache
                 });
+                const hasUpdates = (
+                    Object.keys(contextUpdates.flow).length > 0 ||
+                    Object.keys(contextUpdates.global).length > 0 ||
+                    Object.keys(contextUpdates.context).length > 0
+                );
+                const encodedContextUpdates = hasUpdates
+                    ? await serializer.sanitizeMessage(contextUpdates, null, taskId, { transferMode, bufferCache })
+                    : null;
                 const transferToMainMs = hrtimeDiffToMs(encodeStart);
 
                 sendMessage({
                     type: 'result',
                     taskId,
                     result: encodedResult,
+                    contextUpdates: encodedContextUpdates,
+                    logs: logs.length > 0 ? logs : null,
                     performance: {
                         transferToWorkerMs,
                         executionMs,
@@ -225,7 +368,32 @@ process.on('message', async (data) => {
                     }
                 });
             } catch (err) {
-                sendError(taskId, err);
+                let encodedContextUpdates = null;
+                const hasUpdates = (
+                    Object.keys(contextUpdates.flow).length > 0 ||
+                    Object.keys(contextUpdates.global).length > 0 ||
+                    Object.keys(contextUpdates.context).length > 0
+                );
+                if (hasUpdates) {
+                    try {
+                        encodedContextUpdates = await serializer.sanitizeMessage(contextUpdates, null, taskId, { transferMode });
+                    } catch (_encodeErr) {
+                        encodedContextUpdates = null;
+                    }
+                }
+
+                const error = err instanceof Error ? err : new Error(String(err));
+                sendMessage({
+                    type: 'error',
+                    taskId,
+                    error: {
+                        message: error.message,
+                        stack: error.stack || '',
+                        name: error.name || 'Error'
+                    },
+                    contextUpdates: encodedContextUpdates,
+                    logs: logs.length > 0 ? logs : null
+                });
             }
         });
     } else if (type === 'terminate') {

@@ -306,7 +306,7 @@ class WorkerPool {
      * @param {object} message - Message from worker
      */
     handleWorkerMessage(workerState, message) {
-        const { type, taskId, result, error, performance } = message;
+        const { type, taskId, result, error, performance, contextUpdates, logs } = message || {};
 
         if (type === 'result') {
             // Task completed successfully
@@ -318,8 +318,18 @@ class WorkerPool {
                 // Recycle worker immediately; result restoration happens asynchronously
                 this.recycleWorker(workerState);
 
-                this.serializer.restoreBuffers(result).then(restoredResult => {
-                    callback(null, { result: restoredResult, performance: performance || null });
+                const restoreResult = this.serializer.restoreBuffers(result);
+                const restoreContext = contextUpdates
+                    ? this.serializer.restoreBuffers(contextUpdates)
+                    : Promise.resolve(contextUpdates);
+
+                Promise.all([restoreResult, restoreContext]).then(([restoredResult, restoredContext]) => {
+                    callback(null, {
+                        result: restoredResult,
+                        performance: performance || null,
+                        contextUpdates: restoredContext || null,
+                        logs: Array.isArray(logs) ? logs : null
+                    });
                 }).catch(restoreErr => {
                     callback(restoreErr instanceof Error ? restoreErr : new Error(String(restoreErr)), null);
                 });
@@ -336,10 +346,23 @@ class WorkerPool {
             const callback = this.callbacks.get(taskId);
             if (callback) {
                 this.callbacks.delete(taskId);
-                const err = new Error(error.message);
-                err.stack = error.stack;
-                err.name = error.name;
-                callback(err, null);
+                const err = new Error(error && error.message ? error.message : 'Worker error');
+                err.stack = error && error.stack ? error.stack : err.stack;
+                err.name = error && error.name ? error.name : err.name;
+
+                if (contextUpdates) {
+                    this.serializer.restoreBuffers(contextUpdates).then(restoredContext => {
+                        err.contextUpdates = restoredContext;
+                        err.logs = Array.isArray(logs) ? logs : null;
+                        callback(err, null);
+                    }).catch(() => {
+                        err.logs = Array.isArray(logs) ? logs : null;
+                        callback(err, null);
+                    });
+                } else {
+                    err.logs = Array.isArray(logs) ? logs : null;
+                    callback(err, null);
+                }
             }
 
             // Return worker to idle state
