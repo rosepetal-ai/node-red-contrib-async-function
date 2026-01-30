@@ -7,7 +7,7 @@
  */
 
 const fs = require('fs').promises;
-const fsSync = require('fs');
+const { constants: fsConstants } = require('fs');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
@@ -22,7 +22,7 @@ class SharedMemoryManager {
      */
     constructor(options = {}) {
         this.threshold = options.threshold ?? 100 * 1024; // 100KB default
-        this.shmPath = this.detectShmPath();
+        this.shmPath = options.shmPath || null;
         this.trackAttachments = options.trackAttachments !== false;
         this.taskAttachments = new Map(); // taskId → Set<filePath>
         this.globalAttachments = new Set(); // All active files
@@ -32,28 +32,59 @@ class SharedMemoryManager {
             filesCreated: 0,
             filesDeleted: 0
         };
+        this.initialized = false;
 
-        // Cleanup orphaned files from previous crashes
-        if (options.cleanupOrphanedFiles !== false) {
-            this.cleanupOrphanedFiles();
-        }
+        this.ready = this.initialize(options).catch((err) => {
+            this.shmPath = os.tmpdir();
+            this.initialized = true;
+            console.warn(`Failed to initialize shared memory manager: ${err.message}`);
+        });
     }
 
     /**
      * Detect platform-specific shared memory path
      * @returns {string} Path to shared memory directory
      */
-    detectShmPath() {
+    async detectShmPath() {
         // Linux: /dev/shm (RAM-backed tmpfs)
         const shmPath = '/dev/shm';
 
         try {
             // Check if /dev/shm exists and is writable
-            fsSync.accessSync(shmPath, fsSync.constants.W_OK);
+            await fs.access(shmPath, fsConstants.W_OK);
             return shmPath;
         } catch (err) {
             // Fall back to os.tmpdir() (macOS, Windows, or Linux without /dev/shm)
             return os.tmpdir();
+        }
+    }
+
+    /**
+     * Initialize shared memory manager
+     * @param {object} options - Configuration options
+     * @returns {Promise<void>}
+     */
+    async initialize(options = {}) {
+        if (this.initialized) {
+            return;
+        }
+
+        if (this.shmPath) {
+            try {
+                await fs.access(this.shmPath, fsConstants.W_OK);
+            } catch (_err) {
+                this.shmPath = await this.detectShmPath();
+            }
+        } else {
+            this.shmPath = await this.detectShmPath();
+        }
+        this.initialized = true;
+
+        // Cleanup orphaned files from previous crashes (async, non-blocking)
+        if (options.cleanupOrphanedFiles !== false) {
+            this.cleanupOrphanedFiles().catch((err) => {
+                console.warn(`Failed to cleanup orphaned files: ${err.message}`);
+            });
         }
     }
 
@@ -80,6 +111,7 @@ class SharedMemoryManager {
      * @returns {Promise<object>} Descriptor object
      */
     async writeBuffer(buffer, taskId, bufferIndex) {
+        await this.ready;
         // Check if buffer exceeds threshold
         if (this.threshold > 0 && buffer.length <= this.threshold) {
             // Return inline buffer (no shared memory needed)
@@ -127,6 +159,7 @@ class SharedMemoryManager {
      * @returns {Promise<Buffer>} Buffer contents
      */
     async readBuffer(descriptor, options = {}) {
+        await this.ready;
         // Validate descriptor
         if (!descriptor || typeof descriptor !== 'object') {
             throw new Error('Invalid descriptor: must be an object');
@@ -234,6 +267,7 @@ class SharedMemoryManager {
      * @returns {Promise<void>}
      */
     async cleanupAll() {
+        await this.ready;
         // Delete all tracked files
         const deletePromises = [];
         for (const filePath of this.globalAttachments) {
@@ -259,11 +293,11 @@ class SharedMemoryManager {
     /**
      * Cleanup orphaned files from previous crashes
      */
-    cleanupOrphanedFiles() {
+    async cleanupOrphanedFiles() {
         const oneHourAgo = Date.now() - (60 * 60 * 1000);
 
         try {
-            const files = fsSync.readdirSync(this.shmPath);
+            const files = await fs.readdir(this.shmPath);
 
             for (const file of files) {
                 // Skip files that don't match our pattern
@@ -274,11 +308,15 @@ class SharedMemoryManager {
                 const filePath = path.join(this.shmPath, file);
 
                 try {
-                    const stats = fsSync.statSync(filePath);
+                    const stats = await fs.stat(filePath);
 
                     // Only cleanup files older than 1 hour
                     if (stats.mtimeMs < oneHourAgo) {
-                        fsSync.unlinkSync(filePath);
+                        await fs.unlink(filePath).catch((err) => {
+                            if (err.code !== 'ENOENT') {
+                                throw err;
+                            }
+                        });
                         console.log(`Cleaned up orphaned file: ${file}`);
                     }
                 } catch (err) {

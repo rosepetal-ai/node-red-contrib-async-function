@@ -151,7 +151,7 @@ function extractContextKeysFromCode(code) {
     return { flow: flowKeys, global: globalKeys, context: contextKeys, usesContext };
 }
 
-function buildContextSnapshot(node, code) {
+async function buildContextSnapshot(node, code) {
     const empty = { flow: {}, global: {}, context: {} };
     if (!node || typeof node.context !== 'function') {
         return { snapshot: empty, usesContext: false };
@@ -184,22 +184,52 @@ function buildContextSnapshot(node, code) {
         return value;
     };
 
-    const readKeys = (scope, keySet, target) => {
+    const getValueAsync = (scope, key) => {
+        if (!scope || typeof scope.get !== 'function') {
+            return Promise.resolve(undefined);
+        }
+        if (scope.get.length >= 2) {
+            return new Promise((resolve) => {
+                try {
+                    scope.get(key, (err, value) => {
+                        resolve(err ? undefined : value);
+                    });
+                } catch (_err) {
+                    resolve(undefined);
+                }
+            });
+        }
+        try {
+            const value = scope.get(key);
+            if (value && typeof value.then === 'function') {
+                return value.then((resolved) => resolved).catch(() => undefined);
+            }
+            return Promise.resolve(value);
+        } catch (_err) {
+            return Promise.resolve(undefined);
+        }
+    };
+
+    const readKeys = async (scope, keySet, target) => {
         if (!scope || typeof scope.get !== 'function') {
             return;
         }
-        keySet.forEach((key) => {
+        const entries = Array.from(keySet);
+        await Promise.all(entries.map(async (key) => {
             try {
-                target[key] = coerceBufferLike(scope.get(key));
+                const value = await getValueAsync(scope, key);
+                target[key] = coerceBufferLike(value);
             } catch (_err) {
                 // Ignore context read errors to avoid blocking execution
             }
-        });
+        }));
     };
 
-    readKeys(ctx.flow, keys.flow, snapshot.flow);
-    readKeys(ctx.global, keys.global, snapshot.global);
-    readKeys(ctx, keys.context, snapshot.context);
+    await Promise.all([
+        readKeys(ctx.flow, keys.flow, snapshot.flow),
+        readKeys(ctx.global, keys.global, snapshot.global),
+        readKeys(ctx, keys.context, snapshot.context)
+    ]);
 
     return { snapshot, usesContext: true };
 }
@@ -244,7 +274,7 @@ function rehydrateContextValue(value) {
     return value;
 }
 
-function applyContextUpdates(node, updates, msg) {
+async function applyContextUpdates(node, updates, msg) {
     if (!node || !updates || typeof updates !== 'object' || typeof node.context !== 'function') {
         return;
     }
@@ -258,24 +288,56 @@ function applyContextUpdates(node, updates, msg) {
     const globalUpdates = updates.global && typeof updates.global === 'object' ? updates.global : {};
     const contextUpdates = updates.context && typeof updates.context === 'object' ? updates.context : {};
 
-    const applyUpdates = (scope, scopeLabel, scopeUpdates) => {
+    const applyUpdates = async (scope, scopeLabel, scopeUpdates) => {
         if (!scope || typeof scope.set !== 'function') {
             return;
         }
-        Object.keys(scopeUpdates).forEach((key) => {
+        const setValueAsync = (key, value) => {
+            if (scope.set.length >= 3) {
+                return new Promise((resolve) => {
+                    try {
+                        scope.set(key, value, (err) => {
+                            if (err && typeof node.warn === 'function') {
+                                node.warn(`Failed to set ${scopeLabel} context "${key}": ${err.message || err}`, msg);
+                            }
+                            resolve();
+                        });
+                    } catch (err) {
+                        if (typeof node.warn === 'function') {
+                            node.warn(`Failed to set ${scopeLabel} context "${key}": ${err.message || err}`, msg);
+                        }
+                        resolve();
+                    }
+                });
+            }
             try {
-                scope.set(key, rehydrateContextValue(scopeUpdates[key]));
+                const result = scope.set(key, value);
+                if (result && typeof result.then === 'function') {
+                    return result.catch((err) => {
+                        if (typeof node.warn === 'function') {
+                            node.warn(`Failed to set ${scopeLabel} context "${key}": ${err.message || err}`, msg);
+                        }
+                    });
+                }
             } catch (err) {
                 if (typeof node.warn === 'function') {
                     node.warn(`Failed to set ${scopeLabel} context "${key}": ${err.message || err}`, msg);
                 }
             }
-        });
+            return Promise.resolve();
+        };
+        const entries = Object.keys(scopeUpdates);
+        await Promise.all(entries.map(async (key) => {
+            const value = rehydrateContextValue(scopeUpdates[key]);
+            await setValueAsync(key, value);
+        }));
     };
 
-    applyUpdates(context.flow, 'flow', flowUpdates);
-    applyUpdates(context.global, 'global', globalUpdates);
-    applyUpdates(context, 'context', contextUpdates);
+    await Promise.all([
+        applyUpdates(context.flow, 'flow', flowUpdates),
+        applyUpdates(context.global, 'global', globalUpdates),
+        applyUpdates(context, 'context', contextUpdates)
+    ]);
 }
 
 function applyWorkerLogs(node, logs, msg) {
@@ -479,31 +541,7 @@ module.exports = function(RED) {
         const nodeRedUserDir = resolveNodeRedUserDir(RED);
         const transferMode = normalizeTransferMode(config.transferMode, node.executionMode);
 
-        // Verify modules are resolvable WITHOUT loading them in the main thread.
-        // Loading native modules (like 'gl') in main thread prevents them from
-        // working in worker threads due to native module registration conflicts.
-        if (node.libs.length > 0) {
-            const { createRequire } = require('module');
-            const nodeRedRequire = createRequire(path.join(nodeRedUserDir, 'package.json'));
-
-            for (const lib of node.libs) {
-                if (!lib || !lib.module || !lib.var) {
-                    continue;
-                }
-                try {
-                    // Only resolve the path - don't actually load the module
-                    nodeRedRequire.resolve(lib.module);
-                } catch (err) {
-                    node.error(`Module "${lib.module}" not found. Install it with: cd ${nodeRedUserDir} && npm install ${lib.module}`);
-                    node.status({
-                        fill: 'red',
-                        shape: 'dot',
-                        text: `Module not found: ${lib.module}`
-                    });
-                    return;
-                }
-            }
-        }
+        // Module resolution happens inside workers to avoid blocking the main thread.
 
         const startPool = () => {
             try {
@@ -562,7 +600,7 @@ module.exports = function(RED) {
             }
 
             const timing = { start: process.hrtime.bigint() };
-            const contextInfo = buildContextSnapshot(node, node.func);
+            const contextInfo = await buildContextSnapshot(node, node.func);
             const workerMsg = buildWorkerInputMsg(msg, node.func, contextInfo.snapshot, contextInfo.usesContext);
 
             try {
@@ -583,7 +621,7 @@ module.exports = function(RED) {
                 }
 
                 if (resultData === null || resultData === undefined) {
-                    applyContextUpdates(node, contextUpdates, msg);
+                    await applyContextUpdates(node, contextUpdates, msg);
                     applyWorkerLogs(node, logs, msg);
                     done();
                     return;
@@ -593,7 +631,7 @@ module.exports = function(RED) {
                 const mergedPerformance = Object.assign({}, performanceData || {});
                 mergedPerformance.totalMs = totalMs;
 
-                applyContextUpdates(node, contextUpdates, msg);
+                await applyContextUpdates(node, contextUpdates, msg);
                 applyWorkerLogs(node, logs, msg);
 
                 const output = mergeResult(msg, resultData);
@@ -611,7 +649,7 @@ module.exports = function(RED) {
                 });
 
                 if (err && err.contextUpdates) {
-                    applyContextUpdates(node, err.contextUpdates, msg);
+                    await applyContextUpdates(node, err.contextUpdates, msg);
                 }
                 if (err && err.logs) {
                     applyWorkerLogs(node, err.logs, msg);
