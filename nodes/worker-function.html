@@ -1,13 +1,13 @@
-<!-- Async Function Node - Node-RED Editor Configuration -->
+<!-- Worker Function Node - Node-RED Editor Configuration -->
 
 <script type="text/javascript">
-    RED.nodes.registerType('async-function', {
+    RED.nodes.registerType('worker-function', {
         category: 'function',
         color: '#d7d9dc',
         defaults: {
             name: { value: '' },
             func: {
-                value: '// Write your async code here\n// The code runs in a worker thread or child process\n// Available: msg, return, async/await, require(), node.warn/error/log,\n//           flow/global/context (snapshot-based)\n\nreturn msg;'
+                value: '// Write your code here\n// The code runs in a worker thread or child process\n// Available: msg, return, async/await, require(), node.warn/error/log,\n//           flow/global/context (snapshot-based)\n\nreturn msg;'
             },
             outputs: { value: 1, validate: RED.validators.number() },
             timeout: { value: 30000, validate: RED.validators.number() },
@@ -21,7 +21,7 @@
         outputs: 1,
         icon: 'function.svg',
         label: function() {
-            return this.name || 'async function';
+            return this.name || 'worker function';
         },
         labelStyle: function() {
             return this.name ? 'node_label_italic' : '';
@@ -250,7 +250,7 @@
                 status.text('Restarting...').css('color', '#666');
 
                 $.ajax({
-                    url: 'async-function/' + nodeId + '/restart',
+                    url: 'worker-function/' + nodeId + '/restart',
                     type: 'POST',
                     success: function(data) {
                         status.text('✓ Workers restarted').css('color', 'green');
@@ -346,7 +346,7 @@
     });
 </script>
 
-<script type="text/html" data-template-name="async-function">
+<script type="text/html" data-template-name="worker-function">
     <style>
         .async-func-tabs-row {
             margin-bottom: 0;
@@ -519,7 +519,7 @@
     </div>
 </script>
 
-<script type="text/html" data-help-name="async-function">
+<script type="text/html" data-help-name="worker-function">
     <p>Execute custom JavaScript code in a worker thread or child process to prevent event loop blocking.</p>
 
     <h3>Inputs</h3>

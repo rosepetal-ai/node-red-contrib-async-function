@@ -226,7 +226,7 @@ async function loadConfiguredModules(libs) {
             moduleVars.push(lib.var);
             moduleValues.push(loadedModules[lib.var]);
         } catch (err) {
-            console.error(`[async-function] Failed to load module ${lib.module}: ${err.message}`);
+            console.error(`[worker-function] Failed to load module ${lib.module}: ${err.message}`);
             failedModules.push({ module: lib.module, var: lib.var, error: err.message });
         }
     }

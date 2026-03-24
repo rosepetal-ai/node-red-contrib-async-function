@@ -1,7 +1,7 @@
 /**
  * Module Installer
  *
- * Handles automatic installation of npm modules for the async-function node.
+ * Handles automatic installation of npm modules for the worker-function node.
  * Modules are installed in the Node-RED user directory (~/.node-red).
  */
 
@@ -43,21 +43,21 @@ async function getNodeRedUserDir() {
  */
 async function installModule(moduleName) {
     if (!moduleName || typeof moduleName !== 'string') {
-        console.error('[async-function] Invalid module name');
+        console.error('[worker-function] Invalid module name');
         return false;
     }
 
     // Sanitize module name to prevent command injection
     const sanitizedName = moduleName.trim();
     if (!/^(@[\w-]+\/)?[\w.-]+(@[\w.-]+)?$/.test(sanitizedName)) {
-        console.error(`[async-function] Invalid module name format: ${sanitizedName}`);
+        console.error(`[worker-function] Invalid module name format: ${sanitizedName}`);
         return false;
     }
 
     const userDir = await getNodeRedUserDir();
 
     try {
-        console.log(`[async-function] Installing module: ${sanitizedName} in ${userDir}`);
+        console.log(`[worker-function] Installing module: ${sanitizedName} in ${userDir}`);
 
         await new Promise((resolve, reject) => {
             const child = spawn('npm', ['install', sanitizedName], {
@@ -98,11 +98,11 @@ async function installModule(moduleName) {
             });
         });
 
-        console.log(`[async-function] Successfully installed: ${sanitizedName}`);
+        console.log(`[worker-function] Successfully installed: ${sanitizedName}`);
         return true;
 
     } catch (err) {
-        console.error(`[async-function] Failed to install ${sanitizedName}: ${err.message}`);
+        console.error(`[worker-function] Failed to install ${sanitizedName}: ${err.message}`);
         return false;
     }
 }

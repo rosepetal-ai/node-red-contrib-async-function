@@ -9,7 +9,7 @@
   "keywords": [
     "node-red",
     "function",
-    "async",
+    "worker-function",
     "worker-threads",
     "non-blocking",
     "performance",
@@ -34,7 +34,7 @@
   "node-red": {
     "version": ">=2.0.0",
     "nodes": {
-      "async-function": "nodes/async-function.js"
+      "worker-function": "nodes/worker-function.js"
     }
   },
   "dependencies": {}

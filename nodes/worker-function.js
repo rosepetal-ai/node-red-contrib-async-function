@@ -1,8 +1,8 @@
 /**
- * Async Function Node
+ * Worker Function Node
  *
  * A Node-RED function node that executes user code in worker threads
- * to prevent event loop blocking.
+ * or child processes to prevent event loop blocking.
  */
 
 const path = require('path');
@@ -387,7 +387,7 @@ function applyPerformanceMetrics(node, originalMsg, targetMsg, performance) {
         return;
     }
 
-    const label = (typeof node.name === 'string' && node.name.trim()) ? node.name.trim() : 'async function';
+    const label = (typeof node.name === 'string' && node.name.trim()) ? node.name.trim() : 'worker function';
     if (!label) {
         return;
     }
@@ -656,7 +656,7 @@ module.exports = function(RED) {
                 }
 
                 // Log error
-                node.error(`Async function error: ${err.message}`, msg);
+                node.error(`Worker function error: ${err.message}`, msg);
 
                 // Propagate error to Catch node
                 done(err);
@@ -703,12 +703,12 @@ module.exports = function(RED) {
     }
 
     // Register the node type
-    RED.nodes.registerType('async-function', AsyncFunctionNode, {
+    RED.nodes.registerType('worker-function', AsyncFunctionNode, {
         dynamicModuleList: 'libs'
     });
 
     // HTTP endpoint to restart workers for a specific node
-    RED.httpAdmin.post('/async-function/:id/restart', async function(req, res) {
+    RED.httpAdmin.post('/worker-function/:id/restart', async function(req, res) {
         const node = RED.nodes.getNode(req.params.id);
         if (!node || !node.pool) {
             return res.status(404).json({ error: 'Node not found or pool not initialized' });

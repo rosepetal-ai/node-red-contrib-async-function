@@ -1,8 +1,8 @@
-# Async Function Node
+# Worker Function Node
 
 ## Purpose & Use Cases
 
-The Async Function node executes JavaScript code in isolated worker threads by default (or child processes when configured), preventing CPU-intensive operations from blocking the Node-RED event loop. Unlike the standard Function node which runs synchronously on the main thread, this node offloads execution to a pool of workers, keeping your Node-RED instance responsive even during heavy computations.
+The Worker Function node executes JavaScript code in isolated worker threads by default (or child processes when configured), preventing CPU-intensive operations from blocking the Node-RED event loop. Unlike the standard Function node which runs synchronously on the main thread, this node offloads execution to a pool of workers, keeping your Node-RED instance responsive even during heavy computations.
 
 This node is ideal for operations that would otherwise cause Node-RED to become unresponsive: cryptographic operations, prime number calculations, large dataset transformations, image/file processing, and any computation that takes more than 10-20ms to complete. For simple operations like basic math or property transformations, continue using the standard Function node to avoid the ~5-10ms overhead of worker communication (child process mode is higher).
 
@@ -105,7 +105,7 @@ return [[msg1, msg2, msg3]];  // Three messages to output 1
 #### Workers
 - **Range**: 1-16
 - **Default**: 3
-- **Behavior**: Fixed number of workers maintained by this node. Each async-function node maintains its own independent pool. More workers allow more parallel executions but consume more memory (~10-20MB per worker).
+- **Behavior**: Fixed number of workers maintained by this node. Each worker-function node maintains its own independent pool. More workers allow more parallel executions but consume more memory (~10-20MB per worker).
 
 **Guidance:**
 - 1-2 workers: Low-volume flows or memory-constrained environments
@@ -213,7 +213,7 @@ Each message incurs approximately **5-10ms overhead** for:
 
 **Note:** Child process runtime has higher overhead due to full process IPC and larger memory footprint.
 
-**Recommendation:** Only use the async-function node when your code execution time exceeds 10-20ms. For simple operations, the standard function node is more efficient.
+**Recommendation:** Only use the worker-function node when your code execution time exceeds 10-20ms. For simple operations, the standard function node is more efficient.
 
 ### Native Backend Subsystem
 
@@ -237,7 +237,7 @@ The node uses Node.js worker_threads module by default, with additional optimiza
 Every processed message includes timing information in `msg.performance[nodeName]`:
 
 ```javascript
-msg.performance["my async function"] = {
+msg.performance["my worker function"] = {
     transferToWorkerMs: 1.23,  // Time to restore buffers in worker
     executionMs: 45.67,        // Time to execute user code
     transferToMainMs: 0.89,    // Time to serialize result
@@ -334,7 +334,7 @@ The `msg` object must be serializable:
 ### CPU-Intensive Prime Number Calculation
 
 ```
-[inject: 50000] -> [async-function: Calculate Primes] -> [debug]
+[inject: 50000] -> [worker-function: Calculate Primes] -> [debug]
 ```
 
 ```javascript
@@ -368,7 +368,7 @@ Prevents event loop blocking during heavy computation.
 ### Password Hashing with bcrypt
 
 ```
-[http-in: POST /register] -> [async-function: Hash Password] -> [database] -> [http-response]
+[http-in: POST /register] -> [worker-function: Hash Password] -> [database] -> [http-response]
 ```
 
 Setup tab - Modules:
@@ -392,7 +392,7 @@ bcrypt with 12 rounds takes ~300ms - offloading prevents blocking.
 ### Large JSON Dataset Processing
 
 ```
-[file-in: data.json] -> [async-function: Process Data] -> [split] -> [database]
+[file-in: data.json] -> [worker-function: Process Data] -> [split] -> [database]
 ```
 
 Setup tab - Modules:
@@ -426,7 +426,7 @@ Handles datasets with thousands of records without blocking.
 ### Image Metadata Extraction
 
 ```
-[file-in: photo.jpg] -> [async-function: Extract EXIF] -> [debug]
+[file-in: photo.jpg] -> [worker-function: Extract EXIF] -> [debug]
 ```
 
 Setup tab - Modules:
@@ -462,7 +462,7 @@ Binary buffer transferred efficiently (zero-copy when possible).
 ### Cryptographic Hash Generation
 
 ```
-[inject: "secret data"] -> [async-function: Generate Hashes] -> [debug]
+[inject: "secret data"] -> [worker-function: Generate Hashes] -> [debug]
 ```
 
 Function tab (no external modules needed):
@@ -486,7 +486,7 @@ Uses built-in crypto module - no setup required.
 ### Conditional Routing with Multiple Outputs
 
 ```
-[mqtt-in] -> [async-function: Route by Priority (3 outputs)] -> [high-priority-queue]
+[mqtt-in] -> [worker-function: Route by Priority (3 outputs)] -> [high-priority-queue]
                                                               -> [normal-queue]
                                                               -> [low-priority-queue]
 ```

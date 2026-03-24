@@ -20,7 +20,7 @@ Run heavy computations in Node-RED without slowing down your flows. This node wo
 
 ## How It Works
 
-Drop an **async function** node into your flow. Write your code just like you would in a regular function node. The difference? Your code runs in a separate worker thread by default (or a child process if configured), so heavy operations won't freeze Node-RED.
+Drop a **worker function** node into your flow. Write your code just like you would in a regular function node. The difference? Your code runs in a separate worker thread by default (or a child process if configured), so heavy operations won't freeze Node-RED.
 
 ## When to Use This
 
@@ -66,7 +66,7 @@ return msg;
 
 ## Typical Flow
 
-1. Add an **async function** node to your workspace.
+1. Add a **worker function** node to your workspace.
 2. Connect an Inject node (input) and a Debug node (output).
 3. Write a simple script:
    ```javascript
@@ -194,7 +194,9 @@ npm install @rosepetal/node-red-contrib-async-function
 
 Restart Node-RED and find the node in the **function** category.
 
-## Migration from Earlier Versions
+## Migration
+
+### From minWorkers/maxWorkers
 
 If you're upgrading from a version that used `minWorkers` and `maxWorkers`:
 - Your existing flows will automatically migrate to use the new `numWorkers` parameter
