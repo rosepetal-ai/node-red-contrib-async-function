@@ -1,6 +1,6 @@
 {
   "name": "@rosepetal/node-red-contrib-async-function",
-  "version": "1.0.3",
+  "version": "1.1.0",
   "description": "A Node-RED function node that runs code in worker threads to keep your flows responsive",
   "repository": {
     "type": "git",
