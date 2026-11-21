@@ -1,3 +1,19 @@
+---
+title: "Worker Function Node - JavaScript in Worker Threads"
+description: "Reference of the worker-function node for Node-RED: function code that runs in a pool of worker threads or child processes, with its options, external modules, buffer transfer, limitations, examples and troubleshooting. Part of @rosepetal/node-red-contrib-async-function."
+sidebar_position: 1
+head:
+  - - meta
+    - name: "keywords"
+      content: "node-red, worker function, function node, worker threads, child process, worker pool, queue, timeout, npm modules, shared memory, rosepetal"
+  - - meta
+    - property: "og:title"
+      content: "Worker Function Node - @rosepetal/node-red-contrib-async-function"
+  - - meta
+    - property: "og:description"
+      content: "Reference of the worker-function node for Node-RED: function code that runs in a pool of worker threads or child processes."
+---
+
 # Worker Function Node
 
 ## Purpose & Use Cases
@@ -141,7 +157,7 @@ When the node starts:
 - Installation happens synchronously during node initialization
 - The NODE_RED_HOME environment variable can override the install location
 - Scoped packages are supported (e.g., `@scope/package`)
-- Version specifiers are supported (e.g., `lodash@4.17.21`)
+- Version specifiers are not supported: with `lodash@4.17.21` the module is installed, but the workers cannot load it and the node reports `Init failed`. Enter the package name alone (`lodash`)
 
 #### Using Modules in Code
 

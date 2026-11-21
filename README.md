@@ -4,6 +4,15 @@ Run heavy computations in Node-RED without slowing down your flows. This node wo
 
 ![Example](assets/example.png)
 
+## Documentation
+
+| Page | Contents |
+|------|----------|
+| [Overview](docs/index.md) | Installation, requirements, quick start, what the code can use and the status of the node |
+| [worker-function](docs/worker-function.md) | Reference of the node: inputs and outputs, options, modules, buffer transfer, limitations, examples and troubleshooting |
+
+The same pages are published at <https://docs.rosepetal.ai/flows/node-red-contrib-async-function>.
+
 ## What You Get
 
 - Write JavaScript code that feels familiar—same as the function node.
@@ -39,7 +48,7 @@ Drop a **worker function** node into your flow. Write your code just like you wo
 - **Name** – Optional label for your canvas.
 - **Function** – Your JavaScript code. Works with `async/await`, `return`, and `require()`.
 - **Outputs** – How many output wires (0-10). Return an array for multiple outputs.
-- **Timeout** – Maximum seconds to wait before killing the worker. Default: 30 seconds.
+- **Timeout** – Maximum time in milliseconds to wait before killing the worker (1000-300000). Default: 30000 (30 seconds).
 - **Runtime** – Worker Threads (default, fastest) or Child Process (for native modules like `gl`).
 
 ### Worker Pool
@@ -91,7 +100,7 @@ return msg;
 - Snapshot includes only literal keys found in `flow.get("key")` / `global.get("key")` / `context.get("key")`
 - Context store selection is not supported (default store only)
 - `node.warn/error/log` are collected and forwarded to the main thread
-- Non-serializable objects (functions, symbols, etc.)
+- Non-serializable values in `msg` (functions, symbols, etc.) are not passed to the worker
 
 ## Code Examples
 
