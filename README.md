@@ -9,7 +9,7 @@ Run heavy computations in Node-RED without slowing down your flows. This node wo
 | Page | Contents |
 |------|----------|
 | [Overview](docs/index.md) | Installation, requirements, quick start, what the code can use and the status of the node |
-| [worker-function](docs/worker-function.md) | Reference of the node: inputs and outputs, options, modules, buffer transfer, limitations, examples and troubleshooting |
+| [worker-function](docs/worker-function.md) | Reference of the node: inputs and outputs, options, modules, status and errors, buffer transfer, limitations, examples and troubleshooting |
 
 The same pages are published at <https://docs.rosepetal.ai/flows/node-red-contrib-async-function>.
 
@@ -71,7 +71,7 @@ return msg;
 ```
 
 ### Buffer Handling
-- **Buffers** – Worker Threads use zero-copy transfer when possible. Child Process mode and non-transferable buffers fall back to shared memory (`/dev/shm` on Linux, otherwise `os.tmpdir()`), with base64 fallback if needed.
+- **Buffers** – Worker Threads use zero-copy transfer when possible. Child Process mode passes buffers through shared memory (`/dev/shm` on Linux, otherwise `os.tmpdir()`), with base64 fallback if needed.
 
 ## Typical Flow
 
@@ -172,7 +172,7 @@ The node shows you what's happening in real time:
 - **Queue: 5** – 5 messages waiting
 - **Green dot** – Normal operation
 - **Yellow dot** – Queue filling up (>50 messages)
-- **Red dot** – Queue almost full (>90%) or error
+- **Red dot** – Queue almost full (90% or more) or error
 - **Ring** – All workers busy with a backlog
 
 ## Performance Notes
@@ -181,7 +181,7 @@ The node shows you what's happening in real time:
 - Best for operations taking more than 10ms to run.
 - Each node maintains a fixed pool of workers—no startup delay or dynamic scaling overhead.
 - Workers are dedicated per-node, ensuring predictable performance.
-- **Binary Fast Path**: Worker threads use zero-copy transfer when possible; shared memory is the fallback.
+- **Binary Fast Path**: Worker threads use zero-copy transfer when possible; Child Process mode uses shared memory.
 - Event loop never blocks, even when processing multi-MB binary data (images, files, etc.).
 
 ## Error Handling
