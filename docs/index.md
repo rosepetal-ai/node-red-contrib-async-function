@@ -56,7 +56,7 @@ The node is in the **function** category of the palette, listed by its type name
 
 4. Deploy and press the button of the Inject node. The status under the node shows the workers in use and the messages waiting, for example `Active: 0/3 | Queue: 0`.
 
-The **Setup** tab holds the number of outputs, the timeout, the runtime (worker threads or child processes), the number of workers, the size of the queue and the npm modules the code uses. See [Configuration Options](./worker-function.md#configuration-options).
+The **Setup** tab holds the number of outputs, the timeout, the runtime (worker threads or child processes), the number of workers, the size of the queue, the npm modules the code uses and the **Restart Workers** button. See [Configuration Options](./worker-function.md#configuration-options).
 
 ## When to Use It
 
@@ -71,14 +71,16 @@ The **Setup** tab holds the number of outputs, the timeout, the runtime (worker 
 |-------------|-----------|
 | `msg`, `return`, `async` / `await` | Return a message, an array with one entry per output, or `null` to send nothing |
 | `require()` | Loads the built-in modules of Node.js and the modules installed in the Node-RED user directory |
-| Modules listed in the **Setup** tab | Each one is a variable in the code, with the name given in **Import as**. Node-RED installs the missing ones when the flows start, as it does for the modules of the function node |
+| Modules listed in the **Setup** tab | Each one is a variable in the code, with the name given in **Import as**. Node-RED installs the missing ones when the flows start, as it does for the modules of the function node, and the workers load them from the Node-RED user directory |
 | `flow`, `global`, `context` | A snapshot: `get` returns the value the key had when the message arrived at the node and `set` is applied when the function ends. The snapshot holds only the keys written as string literals, such as `flow.get("count")`, and uses the default context store |
 | `node.warn()`, `node.error()`, `node.log()` | Collected in the worker and reported when the function ends |
-| `console`, `setTimeout`, `setInterval`, `Buffer`, `process` | The globals of Node.js |
+| `console`, `setTimeout`, `setInterval`, `Buffer`, `process` | The globals of Node.js; `console` writes to the output of the Node-RED process, not to the Debug sidebar |
 
-`node.send()` and `env.get()` are not available: return the messages, and read environment variables from `process.env`. The message is copied to the worker, so functions and symbols inside `msg` are dropped and class instances arrive as plain objects. See [Limitations](./worker-function.md#limitations).
+`node.send()` and `env.get()` are not available: return the messages, and read environment variables from `process.env`. See [Limitations](./worker-function.md#limitations).
 
-An error thrown by the code is reported to the Catch nodes of the flow. A message that runs longer than the timeout (30 seconds by default) fails with `Execution timeout`, and its worker is replaced by a new one.
+Only the properties the code names as `msg.<name>` are copied to the worker (the whole message when it names none), and each message sent is the incoming message with the properties of the returned object written over it. Functions and symbols inside `msg` are dropped, and class instances, dates included, arrive as plain objects. Buffers are moved without copying when possible (Worker Threads) or passed through shared memory files (Child Process). See [Message Handling](./worker-function.md#message-handling) and [Buffers in Worker Threads](./worker-function.md#buffers-in-worker-threads).
+
+An error thrown by the code is reported to the Catch nodes of the flow. A message that runs longer than the timeout (30 seconds by default) fails with `Execution timeout`, and its worker is replaced by a new one. See [Status and Errors](./worker-function.md#status-and-errors).
 
 ## Status
 
@@ -88,10 +90,10 @@ The text under the node is refreshed every 2 seconds.
 |--------|---------|
 | `Active: 2/3` | Workers that are running a message, out of the workers of the node |
 | `Queue: 5` | Messages waiting for a free worker |
-| `SHM: 1` | Shared memory files in use, shown only when there is at least one |
+| `SHM: 1` | Shared memory files in use (Child Process runtime), shown only when there is at least one |
 | Green | Normal operation |
 | Yellow | More than 50 messages in the queue |
-| Red | The queue is at 90% of its size or more, a message has just failed, or the workers could not start |
+| Red | The queue is at 90% of its size or more, a message has just failed (`Error: …` for 3 seconds), or the workers could not start (`Init failed`, `Modules disabled`, `Pool creation failed`) |
 | Ring instead of dot | Every worker is busy and there are messages in the queue |
 
 Every message the node sends carries the timing of its execution in `msg.performance`, under the name of the node (`worker function` when it has no name). See [Performance Metrics](./worker-function.md#performance-metrics).
